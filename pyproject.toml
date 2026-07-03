@@ -1,0 +1,26 @@
+[project]
+name = "csihar"
+version = "0.1.0"
+description = "WiFi CSI human activity recognition on ESP32-S3 (TU major project)"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "pandas>=2.2",
+    "pyarrow>=17",
+    "pyserial>=3.5",
+    "matplotlib>=3.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["csihar*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

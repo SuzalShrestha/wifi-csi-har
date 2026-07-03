@@ -1,0 +1,19 @@
+# data — never commit raw captures (large); share via Drive/LFS
+datasets/raw/
+datasets/sessions/
+*.parquet
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# firmware working tree (cloned separately, see firmware/README.md)
+firmware/esp-csi/
+firmware/build/
+
+# misc
+.DS_Store
+experiments/runs/
