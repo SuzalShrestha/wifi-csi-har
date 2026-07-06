@@ -1,0 +1,220 @@
+import csv
+import json
+
+import numpy as np
+import pytest
+import torch
+
+from csihar.dataset import LABEL_NAMES, assemble_dataset
+from csihar.models import build_model
+from csihar.models.inference import (
+    CHECKPOINT_KEYS,
+    load_checkpoint,
+    predict,
+    save_checkpoint,
+)
+from csihar.preprocessing import PreprocessConfig
+from csihar.simulate import write_session
+from csihar.train import TrainConfig, norm_apply, norm_fit, train_model
+
+# ---------------------------------------------------------------- TrainConfig
+
+
+def test_train_config_json_roundtrip():
+    cfg = TrainConfig(model="cnn_lstm", split="cross-subject",
+                      test_subject="s2", epochs=3, seed=7)
+    again = TrainConfig.from_json(cfg.to_json())
+    assert again == cfg
+    assert json.loads(cfg.to_json())["test_subject"] == "s2"
+
+
+# -------------------------------------------------------------- normalization
+
+
+def test_norm_fit_shapes_and_zero_std_guard():
+    rng = np.random.default_rng(0)
+    X = rng.normal(5.0, 2.0, size=(10, 3, 20, 8)).astype(np.float32)
+    X[:, 1, :, 3] = 42.0  # dead channel -> zero std
+    mean, std = norm_fit(X)
+    assert mean.shape == (3, 8) and std.shape == (3, 8)
+    assert mean.dtype == np.float32 and std.dtype == np.float32
+    assert std[1, 3] == 1.0  # guard: zero std replaced, no divide-by-zero
+    assert mean[1, 3] == pytest.approx(42.0)
+    assert (std > 0).all()
+
+
+def test_norm_fit_train_only_semantics():
+    rng = np.random.default_rng(1)
+    X = rng.normal(0.0, 1.0, size=(20, 2, 15, 6)).astype(np.float32)
+    train_idx = np.arange(15)
+    X_shifted = X.copy()
+    X_shifted[15:] += 100.0  # shifted test windows must not leak into stats
+    mean_train, _ = norm_fit(X_shifted[train_idx])
+    mean_full, _ = norm_fit(X_shifted)
+    assert np.allclose(mean_train, norm_fit(X[train_idx])[0])
+    assert not np.allclose(mean_train, mean_full)
+
+
+def test_norm_apply_standardizes_and_does_not_mutate():
+    rng = np.random.default_rng(2)
+    X = rng.normal(3.0, 4.0, size=(30, 2, 25, 5)).astype(np.float32)
+    before = X.copy()
+    mean, std = norm_fit(X)
+    Z = norm_apply(X, mean, std)
+    assert Z is not X
+    assert np.array_equal(X, before)  # pure function, no mutation
+    assert Z.dtype == np.float32
+    assert np.abs(Z.mean(axis=(0, 2))).max() < 1e-3
+    assert np.abs(Z.std(axis=(0, 2)) - 1.0).max() < 1e-3
+
+
+def test_norm_fit_rejects_bad_shapes():
+    with pytest.raises(ValueError):
+        norm_fit(np.zeros((5, 10, 4), np.float32))
+    with pytest.raises(ValueError):
+        norm_fit(np.zeros((0, 3, 10, 4), np.float32))
+
+
+# ------------------------------------------------------- checkpoint contract
+
+
+@pytest.mark.parametrize("name,extra", [("cnn", {}), ("cnn_lstm", {"chunk_len": 16})])
+def test_checkpoint_roundtrip_and_predict(tmp_path, name, extra):
+    torch.manual_seed(0)
+    config = {"n_rx": 2, "n_time": 64, "n_subcarriers": 32, "n_classes": 6, **extra}
+    model = build_model(name, **config)
+    rng = np.random.default_rng(3)
+    mean = rng.normal(0, 1, size=(2, 32)).astype(np.float32)
+    std = rng.uniform(0.5, 2.0, size=(2, 32)).astype(np.float32)
+
+    path = save_checkpoint(
+        tmp_path / f"{name}.pt", model=model, model_name=name,
+        label_names=LABEL_NAMES, norm_mean=mean, norm_std=std, config=config,
+    )
+    assert path.exists()
+
+    # exact on-disk contract Phase 5 depends on
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    assert set(payload.keys()) == set(CHECKPOINT_KEYS)
+
+    bundle = load_checkpoint(path)
+    assert bundle.model_name == name
+    assert bundle.label_names == LABEL_NAMES
+    assert not bundle.model.training  # eval mode
+    assert np.allclose(bundle.norm_mean, mean)
+    assert np.allclose(bundle.norm_std, std)
+    assert bundle.config["n_classes"] == 6
+
+    # single window and batch, confidences are a softmax distribution
+    x_one = rng.normal(0, 1, size=(2, 64, 32)).astype(np.float32)
+    labels, conf = predict(bundle, x_one)
+    assert labels[0] in LABEL_NAMES and len(labels) == 1
+    assert conf.shape == (1, 6)
+    x_batch = rng.normal(0, 1, size=(5, 2, 64, 32)).astype(np.float32)
+    labels, conf = predict(bundle, x_batch)
+    assert len(labels) == 5 and all(lbl in LABEL_NAMES for lbl in labels)
+    assert conf.shape == (5, 6)
+    assert np.allclose(conf.sum(axis=1), 1.0, atol=1e-5)
+    assert (conf >= 0).all()
+
+
+def test_save_checkpoint_validates_contract(tmp_path):
+    model = build_model("cnn", n_rx=1, n_time=64, n_subcarriers=32, n_classes=6)
+    mean = np.zeros((1, 32), np.float32)
+    std = np.ones((1, 32), np.float32)
+    good = {"n_rx": 1, "n_time": 64, "n_subcarriers": 32, "n_classes": 6}
+    with pytest.raises(ValueError, match="missing required"):
+        save_checkpoint(tmp_path / "a.pt", model=model, model_name="cnn",
+                        label_names=LABEL_NAMES, norm_mean=mean, norm_std=std,
+                        config={"n_rx": 1})
+    with pytest.raises(ValueError, match="chunk_len"):
+        save_checkpoint(tmp_path / "b.pt", model=model, model_name="cnn_lstm",
+                        label_names=LABEL_NAMES, norm_mean=mean, norm_std=std,
+                        config=good)
+    with pytest.raises(ValueError, match="shape"):
+        save_checkpoint(tmp_path / "c.pt", model=model, model_name="cnn",
+                        label_names=LABEL_NAMES, norm_mean=np.zeros((3, 32)),
+                        norm_std=std, config=good)
+
+
+def test_predict_rejects_wrong_shapes(tmp_path):
+    model = build_model("cnn", n_rx=2, n_time=64, n_subcarriers=32, n_classes=6)
+    path = save_checkpoint(
+        tmp_path / "m.pt", model=model, model_name="cnn",
+        label_names=LABEL_NAMES,
+        norm_mean=np.zeros((2, 32), np.float32),
+        norm_std=np.ones((2, 32), np.float32),
+        config={"n_rx": 2, "n_time": 64, "n_subcarriers": 32, "n_classes": 6},
+    )
+    bundle = load_checkpoint(path)
+    with pytest.raises(ValueError):
+        predict(bundle, np.zeros((64, 32), np.float32))  # 2-D
+    with pytest.raises(ValueError):
+        predict(bundle, np.zeros((3, 64, 32), np.float32))  # wrong n_rx
+
+
+# ---------------------------------------------------------- end-to-end smoke
+
+
+@pytest.fixture(scope="module")
+def sim_dataset(tmp_path_factory):
+    """s1,s2 x background,walking -> ~16 trivially separable windows."""
+    root = tmp_path_factory.mktemp("raw")
+    seed = 0
+    for subject in ("s1", "s2"):
+        for label in ("background", "walking"):
+            write_session(
+                root, label=label, subject=subject, duration_s=8.0, seed=seed
+            )
+            seed += 1
+    return assemble_dataset(root, PreprocessConfig())
+
+
+def test_train_model_smoke(sim_dataset, tmp_path):
+    cfg = TrainConfig(
+        model="cnn",
+        split="random",
+        epochs=8,
+        batch_size=8,
+        patience=8,
+        results_csv=str(tmp_path / "results" / "dl.csv"),
+        checkpoints_dir=str(tmp_path / "checkpoints"),
+        figures_dir=str(tmp_path / "figures"),
+    )
+    report, checkpoint_path = train_model(sim_dataset, cfg)
+
+    # walking vs background in simulation is trivially separable
+    assert report.accuracy > 0.7
+
+    # checkpoint exists, honors the contract, and is usable for inference
+    assert checkpoint_path.exists()
+    assert checkpoint_path.name == "cnn_random_0.pt"
+    bundle = load_checkpoint(checkpoint_path)
+    labels, conf = predict(bundle, sim_dataset.X[:2])
+    assert len(labels) == 2 and conf.shape == (2, len(LABEL_NAMES))
+
+    # provenance row landed in the results CSV
+    with open(cfg.results_csv, newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 1
+    assert rows[0]["model"] == "cnn"
+    assert rows[0]["split"] == "random"
+    assert rows[0]["seed"] == "0"
+    assert float(rows[0]["accuracy"]) == pytest.approx(report.accuracy, abs=1e-3)
+    assert TrainConfig.from_json(rows[0]["config"]) == cfg
+
+    # confusion matrix figure regenerated from code
+    assert (tmp_path / "figures" / "cm_cnn_random.png").exists()
+
+
+def test_train_model_cross_subject_requires_subject(sim_dataset):
+    cfg = TrainConfig(model="cnn", split="cross-subject", epochs=1)
+    with pytest.raises(ValueError, match="test_subject"):
+        train_model(sim_dataset, cfg)
+
+
+def test_train_model_rejects_unknown_names(sim_dataset):
+    with pytest.raises(ValueError, match="unknown model"):
+        train_model(sim_dataset, TrainConfig(model="mlp", epochs=1))
+    with pytest.raises(ValueError, match="unknown split"):
+        train_model(sim_dataset, TrainConfig(split="temporal", epochs=1))
