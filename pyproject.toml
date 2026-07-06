@@ -10,10 +10,12 @@ dependencies = [
     "pyarrow>=17",
     "pyserial>=3.5",
     "matplotlib>=3.9",
+    "scikit-learn>=1.5",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+ml = ["torch>=2.4"]
 
 [build-system]
 requires = ["setuptools>=68"]

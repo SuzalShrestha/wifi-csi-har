@@ -9,9 +9,12 @@ modulation + Gaussian noise + occasional impulsive spikes.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
-from .parser import LLTF_N_SUBCARRIERS
+from .parser import LLTF_N_SUBCARRIERS, parse_line
+from .storage import frames_to_dataframe, write_session_metadata
 
 # Rough motion-frequency signatures (Hz) and modulation depths per activity.
 ACTIVITY_PROFILES: dict[str, tuple[float, float]] = {
@@ -56,6 +59,47 @@ def generate_lines(
             amp = amp + rng.normal(0, 15.0, LLTF_N_SUBCARRIERS)
         lines.append((t, _format_line(i, mac, amp, rng)))
     return lines
+
+
+def write_session(
+    out_dir: Path,
+    *,
+    label: str,
+    subject: str,
+    environment: str = "sim_room",
+    receivers: tuple[str, ...] = ("rx1", "rx2", "rx3"),
+    duration_s: float = 10.0,
+    seed: int = 0,
+    t0: float = 1000.0,
+) -> Path:
+    """Write a complete simulated session dir in the on-disk storage layout.
+
+    Creates ``out_dir/sim_<subject>_<label>_<seed>/`` containing one Parquet
+    file per receiver plus ``metadata.json`` — the shared fixture factory for
+    everything downstream of storage. Each receiver gets a distinct seed so
+    the three streams are decorrelated; host_ts is ``t0 + line timestamp``
+    (set at parse time — CsiFrame is frozen).
+    """
+    session_dir = out_dir / f"sim_{subject}_{label}_{seed}"
+    write_session_metadata(
+        session_dir,
+        label=label,
+        subject=subject,
+        environment=environment,
+        receivers={rx: "simulated" for rx in receivers},
+        notes=f"simulate.write_session seed={seed} duration_s={duration_s}",
+    )
+    for i, rx in enumerate(receivers):
+        lines = generate_lines(
+            activity=label, duration_s=duration_s, seed=seed + 1000 * i
+        )
+        frames = []
+        for ts, line in lines:
+            frame = parse_line(line, host_ts=t0 + ts)
+            if frame is not None:
+                frames.append(frame)
+        frames_to_dataframe(frames).to_parquet(session_dir / f"{rx}.parquet")
+    return session_dir
 
 
 def _channel_profile(rng: np.random.Generator) -> dict:
