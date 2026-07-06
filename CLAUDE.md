@@ -6,8 +6,12 @@ sitting, standing, lying, falling (+ background). Team of 4, defense
 ~March–April 2027 (Chaitra). Target ≥85% accuracy on random/cross-session
 splits. **Read [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) before
 planning any new work** — it defines the 6 phases, milestones, and risk
-register. Current status: Phase 1 host pipeline done; hardware bring-up and
-Phase 2 (preprocessing pilot) next.
+register. Current status: all host-side software for Phases 1, 2, 4 and the
+Phase 5 core is built and tested on simulated data (parser -> collector ->
+preprocessing -> dataset/splits -> baseline + CNN/CNN-LSTM training ->
+realtime engine). Blocked on hardware: flash boards (/flash-firmware),
+confirm subcarrier nulls on real captures, collect the pilot dataset
+(/collect-session), then rerun everything on real data.
 
 ## Commands
 
