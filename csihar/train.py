@@ -62,6 +62,7 @@ class TrainConfig:
     results_csv: str = "experiments/results/dl.csv"
     checkpoints_dir: str = "experiments/checkpoints"
     figures_dir: str = "docs/figures"
+    notes: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)
@@ -308,6 +309,7 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
         report=report,
         n_train=len(train_idx),
         n_test=len(test_idx),
+        notes=cfg.notes,
     )
     figure_path = Path(cfg.figures_dir) / (
         f"cm_{cfg.model}_{split_desc.replace(':', '_')}.png"

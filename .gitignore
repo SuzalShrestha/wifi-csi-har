@@ -17,3 +17,6 @@ firmware/build/
 # misc
 .DS_Store
 experiments/runs/
+experiments/checkpoints/
+datasets/assembled/
+*.npz

@@ -1,0 +1,10 @@
+{
+  "ablation": "receivers",
+  "model": "cnn",
+  "splits": ["random", "cross-session"],
+  "seeds": [0, 1, 2],
+  "epochs": 30,
+  "results_csv": "experiments/results/ablation_receivers.csv",
+  "checkpoints_dir": "experiments/checkpoints/ablations",
+  "figures_dir": "docs/figures/ablations"
+}

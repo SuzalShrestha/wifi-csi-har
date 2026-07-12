@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WiFi CSI HAR — Live</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --border: #232937;
+    --text: #e6e9f0;
+    --dim: #6b7280;
+    --accent: #4da3ff;
+    --ok: #35c46a;
+    --warn: #f2c94c;
+    --danger: #ff4d4f;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 {
+    font-size: 18px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  #conn-status {
+    font-size: 12px;
+    color: var(--dim);
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  #conn-status.connected { color: var(--ok); border-color: var(--ok); }
+  #conn-status.disconnected { color: var(--danger); border-color: var(--danger); }
+
+  #fall-banner {
+    display: none;
+    width: 100%;
+    background: var(--danger);
+    color: white;
+    text-align: center;
+    font-size: 20px;
+    font-weight: 700;
+    padding: 14px 0;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    animation: pulse 1s infinite;
+  }
+  #fall-banner.visible { display: block; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.75; }
+  }
+
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+  }
+
+  .panel h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--dim);
+    margin: 0 0 12px 0;
+  }
+
+  #activity-panel {
+    text-align: center;
+  }
+  #activity-label {
+    font-size: 42px;
+    font-weight: 700;
+    margin: 4px 0 16px 0;
+    color: var(--accent);
+  }
+  #activity-label.unknown {
+    color: var(--dim);
+  }
+  #activity-label.falling {
+    color: var(--danger);
+  }
+  #confidence-track {
+    height: 10px;
+    background: #1c2230;
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 0 auto;
+    max-width: 400px;
+  }
+  #confidence-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.2s ease, background 0.2s ease;
+  }
+  #confidence-text {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--dim);
+  }
+  #raw-label-text {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--dim);
+  }
+
+  #heatmaps {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .rx-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .rx-block .rx-title {
+    font-size: 12px;
+    color: var(--dim);
+  }
+  .rx-block canvas {
+    width: 100%;
+    height: 90px;
+    background: #05070c;
+    border-radius: 6px;
+    display: block;
+    image-rendering: pixelated;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--dim);
+    font-size: 11px;
+    padding: 12px 0 24px 0;
+  }
+</style>
+</head>
+<body>
+
+<div id="fall-banner">Fall detected</div>
+
+<header>
+  <h1>WiFi CSI HAR — Live</h1>
+  <span id="conn-status" class="disconnected">connecting...</span>
+</header>
+
+<main>
+  <section class="panel" id="activity-panel">
+    <h2>Current Activity</h2>
+    <div id="activity-label" class="unknown">unknown</div>
+    <div id="confidence-track"><div id="confidence-fill"></div></div>
+    <div id="confidence-text">confidence: --</div>
+    <div id="raw-label-text">raw: --</div>
+  </section>
+
+  <section class="panel">
+    <h2>CSI Amplitude Heatmaps</h2>
+    <div id="heatmaps"></div>
+  </section>
+</main>
+
+<footer>offline demo &middot; no external resources</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  const N_SUBCARRIERS = 52;
+  const HEATMAP_WIDTH = 300; // rolling columns of history per receiver
+
+  const fallBanner = document.getElementById("fall-banner");
+  const connStatus = document.getElementById("conn-status");
+  const activityLabel = document.getElementById("activity-label");
+  const confidenceFill = document.getElementById("confidence-fill");
+  const confidenceText = document.getElementById("confidence-text");
+  const rawLabelText = document.getElementById("raw-label-text");
+  const heatmapsContainer = document.getElementById("heatmaps");
+
+  // rx_id -> { canvas, ctx, imageData, col }
+  const rxCanvases = {};
+  let fallTimer = null;
+
+  function colormap(value) {
+    // value in [0, 1] -> blue (low) to yellow (high), simple linear ramp.
+    const v = Math.max(0, Math.min(1, value));
+    const r = Math.round(20 + v * 235);
+    const g = Math.round(30 + v * 200);
+    const b = Math.round(120 - v * 100);
+    return [r, g, Math.max(b, 10)];
+  }
+
+  function getOrCreateCanvas(rxId) {
+    if (rxCanvases[rxId]) return rxCanvases[rxId];
+
+    const block = document.createElement("div");
+    block.className = "rx-block";
+    const title = document.createElement("div");
+    title.className = "rx-title";
+    title.textContent = rxId;
+    const canvas = document.createElement("canvas");
+    canvas.width = HEATMAP_WIDTH;
+    canvas.height = N_SUBCARRIERS;
+    block.appendChild(title);
+    block.appendChild(canvas);
+    heatmapsContainer.appendChild(block);
+
+    const ctx = canvas.getContext("2d");
+    const imageData = ctx.createImageData(HEATMAP_WIDTH, N_SUBCARRIERS);
+    // start fully dim/gray
+    for (let i = 0; i < imageData.data.length; i += 4) {
+      imageData.data[i] = 30;
+      imageData.data[i + 1] = 33;
+      imageData.data[i + 2] = 40;
+      imageData.data[i + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+
+    const entry = { canvas, ctx, imageData, col: 0, maxAmp: 1.0 };
+    rxCanvases[rxId] = entry;
+    return entry;
+  }
+
+  function pushColumn(entry, amplitude) {
+    const { ctx, imageData } = entry;
+    // shift image left by 1px by re-reading/writing is expensive; instead
+    // scroll via drawImage then draw the new column at the right edge.
+    ctx.drawImage(entry.canvas, -1, 0);
+    const data = ctx.getImageData(0, 0, HEATMAP_WIDTH, N_SUBCARRIERS);
+
+    // track a slow-moving max for normalization so the colormap stays sane.
+    let localMax = 0;
+    for (let i = 0; i < amplitude.length; i++) {
+      if (amplitude[i] > localMax) localMax = amplitude[i];
+    }
+    entry.maxAmp = Math.max(entry.maxAmp * 0.98, localMax, 1.0);
+
+    const x = HEATMAP_WIDTH - 1;
+    for (let s = 0; s < N_SUBCARRIERS && s < amplitude.length; s++) {
+      const v = amplitude[s] / entry.maxAmp;
+      const [r, g, b] = colormap(v);
+      const y = N_SUBCARRIERS - 1 - s; // subcarrier 0 at bottom
+      const idx = (y * HEATMAP_WIDTH + x) * 4;
+      data.data[idx] = r;
+      data.data[idx + 1] = g;
+      data.data[idx + 2] = b;
+      data.data[idx + 3] = 255;
+    }
+    ctx.putImageData(data, 0, 0);
+  }
+
+  function setActivity(msg) {
+    const label = msg.smoothed_label || "unknown";
+    activityLabel.textContent = label;
+    activityLabel.classList.remove("unknown", "falling");
+    if (label === "unknown") {
+      activityLabel.classList.add("unknown");
+    } else if (label === "falling") {
+      activityLabel.classList.add("falling");
+    }
+
+    const pct = Math.round((msg.confidence || 0) * 100);
+    confidenceFill.style.width = pct + "%";
+    confidenceFill.style.background = label === "falling" ? "var(--danger)" : "var(--accent)";
+    confidenceText.textContent = "confidence: " + pct + "%";
+    rawLabelText.textContent = "raw: " + (msg.raw_label || "--");
+
+    if (msg.fall) {
+      fallBanner.classList.add("visible");
+      if (fallTimer) clearTimeout(fallTimer);
+      fallTimer = setTimeout(function () {
+        fallBanner.classList.remove("visible");
+      }, 5000);
+    }
+  }
+
+  function handleMessage(msg) {
+    if (msg.type === "csi") {
+      const entry = getOrCreateCanvas(msg.rx_id);
+      pushColumn(entry, msg.amplitude || []);
+    } else if (msg.type === "prediction") {
+      setActivity(msg);
+    } else if (msg.type === "end") {
+      connStatus.textContent = "stream ended";
+      connStatus.classList.remove("connected");
+      connStatus.classList.add("disconnected");
+    }
+  }
+
+  function connect() {
+    let backoff = 500;
+    const maxBackoff = 8000;
+
+    function open() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const url = proto + "//" + location.host + "/ws";
+      const ws = new WebSocket(url);
+
+      ws.onopen = function () {
+        connStatus.textContent = "connected";
+        connStatus.classList.remove("disconnected");
+        connStatus.classList.add("connected");
+        backoff = 500;
+      };
+
+      ws.onmessage = function (event) {
+        try {
+          const msg = JSON.parse(event.data);
+          handleMessage(msg);
+        } catch (err) {
+          // ignore malformed frames
+        }
+      };
+
+      ws.onclose = function () {
+        connStatus.textContent = "reconnecting...";
+        connStatus.classList.remove("connected");
+        connStatus.classList.add("disconnected");
+        setTimeout(open, backoff);
+        backoff = Math.min(backoff * 2, maxBackoff);
+      };
+
+      ws.onerror = function () {
+        ws.close();
+      };
+    }
+
+    open();
+  }
+
+  connect();
+})();
+</script>
+
+</body>
+</html>
