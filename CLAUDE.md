@@ -6,21 +6,28 @@ sitting, standing, lying, falling (+ background). Team of 4, defense
 ~March–April 2027 (Chaitra). Target ≥85% accuracy on random/cross-session
 splits. **Read [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) before
 planning any new work** — it defines the 6 phases, milestones, and risk
-register. Current status: all host-side software for Phases 1, 2, 4 and the
-Phase 5 core is built and tested on simulated data (parser -> collector ->
-preprocessing -> dataset/splits -> baseline + CNN/CNN-LSTM training ->
-realtime engine). Blocked on hardware: flash boards (/flash-firmware),
-confirm subcarrier nulls on real captures, collect the pilot dataset
-(/collect-session), then rerun everything on real data.
+register. Current status: ALL host-side software (Phases 1–6) is built and
+tested on simulated data — parser -> collector -> preprocessing ->
+dataset/splits -> baseline + CNN/CNN-LSTM training -> ablation runner
+(csihar/experiments.py) -> realtime engine -> web dashboard
+(csihar/dashboard.py) -> figures pipeline (csihar/figures.py) + LaTeX report
+skeleton (report/). Everything remaining is hardware/data work: flash boards
+(/flash-firmware), confirm subcarrier nulls on real captures, collect the
+pilot dataset (/collect-session), rerun training/ablations on real data,
+measure real-time latency, then write the report chapters.
 
 ## Commands
 
 ```bash
 .venv/bin/python -m pytest                          # test suite — keep green
-.venv/bin/pip install -e ".[dev]"                   # after dependency changes
+.venv/bin/pip install -e ".[dev,ml,demo]"           # after dependency changes
 .venv/bin/python -m csihar.view --simulate walking  # pipeline demo, no hardware
 .venv/bin/python -m csihar.view --live <port>       # live heatmap from a board
 .venv/bin/python -m csihar.collector --help         # record a session
+.venv/bin/python -m csihar.experiments --help       # Phase 4 ablations
+.venv/bin/python -m csihar.dashboard --help         # Phase 5 demo dashboard
+make figures                                        # regenerate report figures
+make report                                         # build LaTeX report (needs TeX)
 ```
 
 Python 3.14 venv at `.venv/`. No GPU on this machine — heavy training happens

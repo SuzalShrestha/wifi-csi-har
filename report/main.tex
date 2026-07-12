@@ -1,0 +1,74 @@
+% WiFi CSI HAR — major project report (EX 707), Tribhuvan University / IOE.
+%
+% IMPORTANT: this is a generic engineering-thesis skeleton. Before submission,
+% verify the exact format (title page fields, certificate/approval pages,
+% margins, font, citation style) against the CURRENT department guidelines —
+% do not trust this file's defaults over the official template.
+%
+% Build: make report   (latexmk -pdf main.tex from within report/)
+% Figures: regenerate with `make figures` at the repo root; NEVER paste
+% hand-made plots. Missing figures render as placeholder boxes so the report
+% compiles at any project stage.
+
+\documentclass[12pt,a4paper,oneside]{report}
+
+\usepackage[a4paper,margin=1in,left=1.25in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage[hidelinks]{hyperref}
+\usepackage{setspace}
+\onehalfspacing
+
+\graphicspath{{../docs/figures/}}
+
+% \figureorplaceholder{filename.png}{caption}{label} — placeholder box until
+% `make figures` has produced the file.
+\newcommand{\figureorplaceholder}[3]{%
+  \begin{figure}[htbp]
+    \centering
+    \IfFileExists{../docs/figures/#1}{%
+      \includegraphics[width=0.85\textwidth]{#1}%
+    }{%
+      \fbox{\parbox[c][0.35\textwidth][c]{0.8\textwidth}{\centering
+        \texttt{#1}\\[0.5em]not generated yet — run \texttt{make figures}}}%
+    }
+    \caption{#2}
+    \label{#3}
+  \end{figure}}
+
+\title{WiFi CSI-Based Human Activity Recognition\\Using Deep Neural Networks}
+% TODO: replace with the department's official title page (names, roll
+% numbers, supervisor, department, date in B.S.).
+\author{[Member A] \and [Member B] \and [Member C] \and [Member D]}
+\date{[Month Year]}
+
+\begin{document}
+
+\maketitle
+
+% TODO: certificate / approval / acknowledgement pages per department format.
+
+\begin{abstract}
+% One paragraph each: problem (contactless HAR from commodity WiFi), method
+% (3x ESP32-S3 CSI amplitude -> preprocessing -> CNN/CNN-LSTM), evaluation
+% (random / cross-session / cross-subject splits; falling recall), headline
+% results (fill after final runs), contribution.
+[To be written last.]
+\end{abstract}
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+\input{chapters/01_introduction}
+\input{chapters/02_literature_review}
+\input{chapters/03_methodology}
+\input{chapters/04_system_design}
+\input{chapters/05_results}
+\input{chapters/06_conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

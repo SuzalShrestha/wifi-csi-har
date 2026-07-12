@@ -20,3 +20,17 @@ experiments/runs/
 experiments/checkpoints/
 datasets/assembled/
 *.npz
+
+# latex build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.lof
+report/*.lot
+report/*.bbl
+report/*.blg
+report/*.fls
+report/*.fdb_latexmk
+report/main.pdf
+report/chapters/*.aux

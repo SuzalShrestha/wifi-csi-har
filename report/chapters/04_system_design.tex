@@ -1,0 +1,30 @@
+\chapter{System Design and Implementation}
+\label{ch:system}
+
+\section{Hardware Setup}
+% Room geometry, receiver placement diagram, router config (locked 20 MHz,
+% channel from survey), powered USB hub. Photo + diagram.
+[TODO]
+
+\section{Software Architecture}
+% csihar package: parser -> collector (threaded 3-port serial) -> storage
+% (Parquet + metadata.json) -> preprocessing (pure functions) -> dataset
+% assembly + splits -> training engine -> checkpoint contract.
+[TODO]
+
+\section{Real-Time Inference}
+% Streaming buffers per receiver; online window assembly mirrors the offline
+% pipeline exactly (same function order); majority vote over last 5
+% predictions with confidence-thresholded "unknown" state; 1.5 s hop.
+% End-to-end latency and detection delay: TODO measure.
+[TODO]
+
+\section{Demo Dashboard}
+% FastAPI + WebSocket; live per-receiver heatmaps, smoothed prediction,
+% confidence, latching fall-alert banner; fully offline page.
+[TODO]
+
+\section{Quality Assurance}
+% Session QA gates (rate, loss, gaps), 150+ unit tests, simulator for
+% hardware-free development.
+[TODO]
