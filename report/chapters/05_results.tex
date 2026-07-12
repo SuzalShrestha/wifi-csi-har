@@ -1,0 +1,51 @@
+\chapter{Results and Discussion}
+\label{ch:results}
+
+% RULE: every number in this chapter comes from experiments/results/*.csv;
+% every figure regenerates via `make figures`. Never report the random split
+% alone. Always include falling recall.
+
+\section{Dataset Summary}
+% Table: subjects, sessions, environments, windows per class. TODO after
+% collection.
+[TODO]
+
+\section{Model Comparison Across Splits}
+
+\figureorplaceholder{split_comparison.png}{Macro-F1 of each model across the
+three evaluation splits (mean $\pm$ std over seeds/folds).}{fig:splits}
+
+% Table: accuracy / macro-F1 / falling recall per model per split.
+% Discuss the random-vs-cross-session gap (temporal leakage) explicitly —
+% this is a strength of the evaluation, not a weakness of the model.
+[TODO]
+
+\section{Fall Detection}
+
+\figureorplaceholder{falling_recall.png}{Falling recall (safety-critical
+class) across splits.}{fig:falling}
+
+[TODO]
+
+\section{Ablation Studies}
+
+\figureorplaceholder{ablation_receivers.png}{Effect of receiver count on
+macro-F1.}{fig:abl-receivers}
+
+\figureorplaceholder{ablation_window.png}{Effect of observation window
+length on macro-F1.}{fig:abl-window}
+
+\figureorplaceholder{ablation_rate.png}{Effect of packet rate on
+macro-F1.}{fig:abl-rate}
+
+[TODO]
+
+\section{Real-Time Performance}
+% End-to-end latency, sustained throughput, detection delay after activity
+% onset. TODO measure on hardware.
+[TODO]
+
+\section{Failure Analysis}
+% Confusion pairs (sitting vs lying), cross-subject drop, packet-loss
+% sensitivity. Confusion matrices are auto-saved per run under docs/figures/.
+[TODO]

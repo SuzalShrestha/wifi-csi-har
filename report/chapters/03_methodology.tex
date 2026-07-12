@@ -1,0 +1,40 @@
+\chapter{Methodology}
+\label{ch:methodology}
+
+\section{System Overview}
+% TX: commodity router. RX: 3x ESP32-S3 N16R8 running espressif/esp-csi
+% csi_recv_router (ping router at 100 Hz, CSI from ping replies).
+% Host: serial 921600 baud -> parser -> Parquet sessions.
+[TODO]
+
+\section{CSI Acquisition}
+% Frame format: 24 metadata columns + len int8 values, (imag, real) pairs.
+% LLTF 64 subcarriers at 20 MHz; 52 usable (DC + guard nulls removed) —
+% confirmed on real captures via detect_null_subcarriers. % TODO: confirm!
+[TODO]
+
+\section{Preprocessing Pipeline}
+% Per receiver: usable-subcarrier selection -> Hampel filter (window 11,
+% 3 sigma) -> moving-mean detrend (window 101) -> uniform resampling to
+% 100 Hz -> 3 s windows, 1.5 s hop, max packet loss 10%. Receivers aligned
+% at window level by host timestamps (independent clocks). Amplitude only.
+[TODO]
+
+\section{Dataset and Labeling}
+% Scripted sessions with labels.json segments; 0.5 s boundary trimming.
+% Subjects, environments, session counts: TODO after collection.
+[TODO]
+
+\section{Models}
+% Baseline: statistical features (7 stats + 3 band energies per
+% rx/subcarrier) -> SVM-RBF and random forest. Deep: CNN and CNN-LSTM
+% over (n_rx, 300, 52) tensors; <2M parameters.
+[TODO]
+
+\section{Evaluation Protocol}
+% THE core methodological claim: three splits (random-window for literature
+% comparability — leaky by design; cross-session; leave-one-subject-out).
+% Normalization statistics fit on train only. Falling recall reported
+% separately. Fixed seeds; every run appends a provenance row (git SHA,
+% config JSON) to experiments/results/.
+[TODO]

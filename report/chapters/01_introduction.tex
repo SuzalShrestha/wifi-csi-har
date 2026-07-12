@@ -1,0 +1,34 @@
+\chapter{Introduction}
+\label{ch:introduction}
+
+\section{Background}
+% Contactless sensing: why WiFi CSI over cameras (privacy, lighting,
+% occlusion) and wearables (compliance). CSI vs RSSI granularity.
+[TODO]
+
+\section{Problem Statement}
+% Recognize 5 activities + background (walking, sitting, standing, lying,
+% falling) from commodity-hardware CSI, with falling as the safety-critical
+% class. Constraint: single-antenna ESP32-S3 receivers -> amplitude-only.
+[TODO]
+
+\section{Objectives}
+\begin{itemize}
+  \item Build a 3-receiver ESP32-S3 CSI acquisition system (100 packets/s).
+  \item Collect a labeled multi-subject, multi-session activity dataset.
+  \item Train and compare classical and deep models (SVM/RF baseline,
+        CNN, CNN-LSTM) on amplitude spectrograms.
+  \item Achieve $\geq 85\%$ accuracy on random and cross-session splits;
+        quantify the cross-subject generalization gap honestly.
+  \item Demonstrate real-time recognition with temporal smoothing and a
+        live dashboard, including a fall alert.
+\end{itemize}
+
+\section{Scope and Limitations}
+% Single person, line-of-sight-ish lab rooms, amplitude-only (single
+% antenna: raw phase is CFO/SFO-corrupted), 5+1 classes. Multi-person,
+% through-wall, and pose estimation are future work.
+[TODO]
+
+\section{Report Organization}
+[TODO]
