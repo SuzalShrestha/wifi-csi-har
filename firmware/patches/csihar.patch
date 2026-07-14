@@ -1,0 +1,33 @@
+diff --git a/examples/get-started/csi_recv_router/main/app_main.c b/examples/get-started/csi_recv_router/main/app_main.c
+index 128f7e8..9dd181b 100644
+--- a/examples/get-started/csi_recv_router/main/app_main.c
++++ b/examples/get-started/csi_recv_router/main/app_main.c
+@@ -216,6 +216,10 @@ void app_main()
+      */
+     ESP_ERROR_CHECK(example_connect());
+ 
++    /* Power save (default WIFI_PS_MIN_MODEM) starves CSI to ~1 Hz;
++     * esp-csi's own test apps disable it too. */
++    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
++
+     wifi_csi_init();
+     wifi_ping_router_start();
+ }
+diff --git a/examples/get-started/csi_recv_router/sdkconfig.defaults b/examples/get-started/csi_recv_router/sdkconfig.defaults
+index fc9a834..fbc098a 100644
+--- a/examples/get-started/csi_recv_router/sdkconfig.defaults
++++ b/examples/get-started/csi_recv_router/sdkconfig.defaults
+@@ -49,3 +49,13 @@ CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+ #
+ CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+ CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240
++
++#
++# csihar: modern (IDF 5.x) symbol names — the CONFIG_CONSOLE_* /
++# CONFIG_ESP32_* names above are deprecated and silently ignored on ESP32-S3.
++# Custom console UART is required: the baudrate prompt only exists in custom
++# mode, and USB-JTAG console would send CSI out the wrong USB port.
++#
++CONFIG_ESP_CONSOLE_UART_CUSTOM=y
++CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_0=y
++CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600

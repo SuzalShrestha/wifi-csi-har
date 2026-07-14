@@ -109,14 +109,28 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--simulate", metavar="ACTIVITY", help="synthetic data")
     group.add_argument("--live", metavar="PORT", help="serial port for live view")
     ap.add_argument("--out", type=Path, help="save PNG instead of showing")
+    ap.add_argument(
+        "--traffic", metavar="IP",
+        help="board IP to flood with UDP while viewing (needed with a real "
+        "router or CSI drops to <1 Hz; see csihar/traffic.py)",
+    )
     args = ap.parse_args(argv)
 
-    if args.replay:
-        replay(args.replay, args.out)
-    elif args.simulate:
-        simulate(args.simulate, args.out)
-    else:
-        live(args.live)
+    traffic = None
+    if args.traffic:
+        from .traffic import TrafficGenerator
+
+        traffic = TrafficGenerator([args.traffic]).start()
+    try:
+        if args.replay:
+            replay(args.replay, args.out)
+        elif args.simulate:
+            simulate(args.simulate, args.out)
+        else:
+            live(args.live)
+    finally:
+        if traffic is not None:
+            traffic.stop()
     return 0
 
 

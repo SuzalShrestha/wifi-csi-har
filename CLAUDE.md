@@ -57,9 +57,18 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
   Swapping them corrupts all amplitudes. Parser handles this; tests pin it.
 - First 64 complex values = LLTF (20 MHz). **52 usable subcarriers**:
   buffer indices 1–26 and 38–63; DC (0) and guard band (27–37) are null.
-  Theory not yet confirmed on real hardware — run
-  `preprocessing.detect_null_subcarriers` on the first real capture and
-  update `usable_lltf_indices` if they disagree.
+  **Confirmed on real hardware 2026-07-13** — `detect_null_subcarriers` on a
+  2500-frame live capture returned exactly the theoretical nulls.
+- **CSI needs sustained UDP downlink traffic** (confirmed 2026-07-13): with
+  only the firmware's ping, the router sends replies/beacons at DSSS/CCK
+  rates which carry no OFDM LTF → <1 Hz CSI. The host must flood each
+  receiver's IP with ~100 pkt/s of 200-byte UDP (`csihar/traffic.py`,
+  `--traffic` flag on collector/view) → steady 100 Hz. Not an IDF version
+  issue (identical on v5.3.2 and v5.4.4).
+- Firmware needs `esp_wifi_set_ps(WIFI_PS_NONE)` and a **custom console
+  UART** (USB-JTAG console sends CSI out the wrong USB port; baud is only
+  configurable in custom mode). Both captured in
+  `firmware/patches/csihar.patch` — apply after any esp-csi re-clone.
 - **Serial must be 921600 baud** (115200 drops lines at 100 pkt/s).
 - **Amplitude only.** Single antenna → raw phase is CFO/SFO-corrupted;
   multi-antenna phase sanitization is impossible on this hardware. Don't

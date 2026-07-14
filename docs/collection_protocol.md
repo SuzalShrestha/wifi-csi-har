@@ -1,7 +1,10 @@
 # Data Collection Protocol (v0 — finalize in Phase 2)
 
 ## Fixed parameters
-- Packet rate: 100 Hz per receiver (firmware `CONFIG_SEND_FREQUENCY`)
+- Packet rate: 100 Hz per receiver, driven by host UDP downlink traffic
+  (`--traffic <ip>` per receiver — without it CSI drops to <1 Hz; see
+  CLAUDE.md hard-won facts). Firmware ping (`CONFIG_SEND_FREQUENCY`) alone
+  is not sufficient with a real router.
 - Serial: 921600 baud, host timestamps at arrival
 - Window: 3 s, 50% overlap (set in preprocessing, not at capture time)
 - Router: channel __, HT20, model __________ (fill in after channel survey)
@@ -38,5 +41,6 @@ from window labels during preprocessing.
 .venv/bin/python -m csihar.collector \
   --port /dev/cu.usbmodemXX1=rx1 --port /dev/cu.usbmodemXX2=rx2 \
   --port /dev/cu.usbmodemXX3=rx3 \
+  --traffic <rx1-ip> --traffic <rx2-ip> --traffic <rx3-ip> \
   --label walking --subject sujal --env room_a --duration 300
 ```

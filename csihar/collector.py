@@ -25,6 +25,7 @@ import serial
 
 from .parser import CsiFrame, CsiParseError, parse_line
 from .storage import frames_to_dataframe, write_session_metadata
+from .traffic import TrafficGenerator
 
 BAUD_RATE = 921600  # 115200 cannot sustain 100 pkt/s * ~700 B/line
 
@@ -69,6 +70,7 @@ def run_session(
     environment: str,
     duration_s: float,
     notes: str = "",
+    traffic_ips: list[str] | None = None,
 ) -> Path:
     session_name = f"{time.strftime('%Y%m%d_%H%M%S')}_{subject}_{label}"
     session_dir = out_dir / session_name
@@ -76,6 +78,10 @@ def run_session(
         session_dir, label=label, subject=subject, environment=environment,
         receivers=ports, notes=notes,
     )
+
+    # Router sends sparse frames at DSSS rates (no CSI on ESP32-S3); steady
+    # UDP downlink forces OFDM/HT rates and ~100 Hz CSI. See csihar/traffic.py.
+    traffic = TrafficGenerator(traffic_ips).start() if traffic_ips else None
 
     stop = threading.Event()
     states = [ReceiverState(port=p, receiver_id=r) for p, r in ports.items()]
@@ -97,6 +103,8 @@ def run_session(
         stop.set()
         for t in threads:
             t.join(timeout=3)
+        if traffic is not None:
+            traffic.stop()
 
     for s in states:
         if not s.frames:
@@ -130,6 +138,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--duration", type=float, default=60.0, help="seconds")
     ap.add_argument("--out", type=Path, default=Path("datasets/raw"))
     ap.add_argument("--notes", default="")
+    ap.add_argument(
+        "--traffic", action="append", metavar="IP", default=[],
+        help="receiver IP to flood with UDP during capture (repeatable); "
+        "required with a real router or CSI drops to <1 Hz",
+    )
     args = ap.parse_args(argv)
 
     ports: dict[str, str] = {}
@@ -141,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
 
     session_dir = run_session(
         ports, args.out, args.label, args.subject, args.env, args.duration,
-        args.notes,
+        args.notes, traffic_ips=args.traffic,
     )
     print(f"\nsession saved: {session_dir}")
     return 0

@@ -41,10 +41,15 @@ source ~/esp/esp-idf/export.sh
 
 ```bash
 git clone --depth 1 https://github.com/espressif/esp-csi firmware/esp-csi
+git -C firmware/esp-csi apply ../patches/csihar.patch
 ```
 
-Use the `csi_recv_router` example unmodified — the host parser
-(`csihar/parser.py`) matches its `CSI_DATA` CSV line format exactly.
+The patch adds `esp_wifi_set_ps(WIFI_PS_NONE)` (default power save starves
+CSI) and fixes `sdkconfig.defaults` to use modern IDF 5.x console symbols
+(custom console UART0 @ 921600 — the example's own defaults use deprecated
+names that are silently ignored, leaving the console on USB-JTAG at 115200).
+Do not touch the `CSI_DATA` output code — the host parser
+(`csihar/parser.py`) matches its CSV line format exactly.
 
 ## 4. Configure and flash (repeat per board)
 
@@ -58,8 +63,14 @@ idf.py menuconfig
 In menuconfig, set:
 - **Example Connection Configuration -> WiFi SSID / Password**: the router's
   credentials.
-- **Serial flasher config / console baud**: **921600**. Do not leave this at
-  115200 — it drops lines at the firmware's 100 packets/s send rate.
+
+Console UART + 921600 baud come from the patched `sdkconfig.defaults`. If
+editing an existing `sdkconfig` by hand instead: baud only sticks in
+**custom console UART mode** (`CONFIG_ESP_CONSOLE_UART_CUSTOM=y` +
+`CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_0=y` + baudrate) — in default mode
+kconfgen silently resets `CONFIG_ESP_CONSOLE_UART_BAUDRATE` to 115200, and
+the deprecated alias `CONFIG_CONSOLE_UART_BAUDRATE` later in the file
+overrides hand edits (last value wins).
 
 Find the port, then flash + monitor:
 
@@ -78,8 +89,12 @@ idf.py -p /dev/cu.usbmodem<N> flash monitor
 
 ## 6. Verify from the host
 
+CSI only streams at ~100 Hz while the host floods the board's IP with UDP
+(the router sends sparse frames at DSSS rates that produce no CSI — see
+CLAUDE.md). Get the board's IP from the boot log (`got ip:...`), then:
+
 ```bash
-.venv/bin/python -m csihar.view --live /dev/cu.usbmodem<N>
+.venv/bin/python -m csihar.view --live /dev/cu.usbmodem<N> --traffic <board-ip>
 ```
 
 Wave a hand between the board and the router — the heatmap must visibly
@@ -99,3 +114,8 @@ react. If it doesn't react, treat the board as not verified.
   fixed 2.4 GHz channel with band steering / smart connect OFF.
 - **Frequent parse errors at 100 Hz**: baud too low (still 115200) or a
   marginal USB cable; re-check menuconfig and re-flash.
+- **CSI_DATA streams but at <1 Hz**: no UDP downlink traffic — the
+  firmware's own ping is not enough with a real router (replies go out at
+  DSSS/CCK rates, which carry no OFDM LTF). Run `csihar.traffic` /
+  `--traffic <board-ip>` on the host. Verified: 100 pkt/s of 200-byte UDP
+  → 100 Hz CSI. Not an IDF version issue.
