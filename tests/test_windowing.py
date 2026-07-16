@@ -22,6 +22,18 @@ def test_resample_produces_uniform_grid():
     assert loss < 0.05
 
 
+def test_resample_epoch_scale_timestamps_yield_fixed_length():
+    # Host timestamps are epoch seconds (~1.7e9); the grid length must be
+    # exactly round(window_s * fs) for every start, or np.stack breaks later.
+    fs, t0 = 100.0, 1.7e9
+    ts = t0 + np.arange(0, 6, 1 / fs)
+    values = np.ones((len(ts), 2))
+    for start_offset in np.linspace(0.0, 2.0, 21):
+        start = t0 + start_offset
+        out, _ = resample_uniform(ts, values, fs=fs, t_start=start, t_end=start + 3.0)
+        assert out.shape == (300, 2)
+
+
 def test_resample_reports_loss_for_gap():
     ts, values = jittered_stream(drop=slice(200, 300))  # 1 s hole
     _, loss = resample_uniform(ts, values, fs=100.0, t_start=1.0, t_end=4.0)

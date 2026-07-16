@@ -36,8 +36,9 @@ def detrend_moving_mean(x: np.ndarray, window: int = 101) -> np.ndarray:
     Acts as a crude high-pass; keeps the motion-induced fluctuations that
     matter for HAR while removing the static channel component.
     """
-    if window < 3:
-        raise ValueError("window must be >= 3")
+    if window % 2 == 0 or window < 3:
+        # even windows shift the trend half a sample and silently misalign
+        raise ValueError("window must be odd and >= 3")
     x = np.asarray(x, dtype=np.float64)
     kernel = np.ones(window) / window
     if x.ndim == 1:

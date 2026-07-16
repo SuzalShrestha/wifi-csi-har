@@ -42,7 +42,11 @@ def resample_uniform(
     order = np.argsort(timestamps)
     ts, vals = timestamps[order], np.asarray(values)[order]
 
-    grid = np.arange(t_start, t_end - 1e-9, 1.0 / fs)
+    # Deterministic sample count: np.arange over epoch-scale floats (~1.7e9)
+    # can yield 299 or 301 points from accumulated rounding, and a single
+    # off-by-one window breaks np.stack at assembly time.
+    n_grid = int(round((t_end - t_start) * fs))
+    grid = t_start + np.arange(n_grid) / fs
     out = np.empty((len(grid), vals.shape[1]), dtype=np.float32)
     for col in range(vals.shape[1]):
         out[:, col] = np.interp(grid, ts, vals[:, col])

@@ -16,6 +16,11 @@ def test_hampel_removes_isolated_spike():
     assert np.abs(cleaned[:90] - x[:90]).max() < 1.0
 
 
+def test_detrend_rejects_even_window():
+    with pytest.raises(ValueError, match="odd"):
+        detrend_moving_mean(np.ones((50, 2)), window=100)
+
+
 def test_hampel_does_not_mutate_input():
     x = np.ones((50, 2))
     x[25, 0] = 99.0

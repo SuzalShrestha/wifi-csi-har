@@ -59,6 +59,7 @@ class TrainConfig:
     seed: int = 0
     patience: int = 5
     val_fraction: float = 0.1
+    class_weighted: bool = True
     results_csv: str = "experiments/results/dl.csv"
     checkpoints_dir: str = "experiments/checkpoints"
     figures_dir: str = "docs/figures"
@@ -143,6 +144,66 @@ def _stratified_val_split(
     fit_pos = np.sort(np.concatenate(fit_parts)).astype(np.int64)
     val_pos = np.sort(np.concatenate(val_parts)).astype(np.int64)
     return fit_pos, val_pos
+
+
+def _grouped_val_split(
+    y: np.ndarray, groups: np.ndarray, val_fraction: float, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Positions for fit/val where val is whole held-out groups (sessions).
+
+    For cross-session/cross-subject evaluation, early stopping must see the
+    same kind of distribution shift as the test set. A window-level random
+    validation split shares activity bouts with fit (temporal leakage), so
+    val macro-F1 tracks memorization and picks the wrong epoch. Falls back
+    to the stratified split (with a warning) when train has < 2 groups.
+    """
+    unique = np.unique(groups)
+    if len(unique) < 2:
+        warnings.warn(
+            "train side has a single session; validation falls back to a "
+            "stratified window split (temporally leaky — early stopping "
+            "will be optimistic)"
+        )
+        return _stratified_val_split(y, val_fraction, seed)
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(unique)
+    target = val_fraction * len(y)
+    all_classes = set(y.tolist())
+    val_groups: set[str] = set()
+    count = 0
+    for group in order:
+        if val_groups and count >= target:
+            break
+        candidate = val_groups | {str(group)}
+        fit_mask = ~np.isin(groups, list(candidate))
+        # fit must keep every class or the model never learns it
+        if set(y[fit_mask].tolist()) == all_classes:
+            val_groups = candidate
+            count = int(np.isin(groups, list(candidate)).sum())
+    if not val_groups:
+        warnings.warn(
+            "no session can be held out without losing a class from fit; "
+            "validation falls back to a stratified window split"
+        )
+        return _stratified_val_split(y, val_fraction, seed)
+    val_mask = np.isin(groups, list(val_groups))
+    return (
+        np.where(~val_mask)[0].astype(np.int64),
+        np.where(val_mask)[0].astype(np.int64),
+    )
+
+
+def _class_weights(y_fit: np.ndarray, n_classes: int) -> torch.Tensor:
+    """Inverse-frequency loss weights (falling is scarce and safety-critical).
+
+    weight_c = n_fit / (n_present_classes * count_c); absent classes get 1.0
+    (they never contribute to the loss anyway).
+    """
+    counts = np.bincount(y_fit, minlength=n_classes).astype(np.float64)
+    present = counts > 0
+    weights = np.ones(n_classes, dtype=np.float64)
+    weights[present] = counts[present].sum() / (present.sum() * counts[present])
+    return torch.from_numpy(weights.astype(np.float32))
 
 
 # ----------------------------------------------------------------- training
@@ -235,7 +296,14 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
 
     train_idx, test_idx, split_desc = _resolve_split(ds, cfg)
     y_train = ds.y[train_idx]
-    fit_pos, val_pos = _stratified_val_split(y_train, cfg.val_fraction, cfg.seed)
+    if cfg.split == "random":
+        fit_pos, val_pos = _stratified_val_split(y_train, cfg.val_fraction, cfg.seed)
+    else:
+        # Regime-matched early stopping: hold out whole sessions for val so
+        # model selection sees the same shift as the cross-* test split.
+        fit_pos, val_pos = _grouped_val_split(
+            y_train, ds.sessions[train_idx], cfg.val_fraction, cfg.seed
+        )
     fit_idx = train_idx[fit_pos]
     val_idx = train_idx[val_pos]
     if len(val_idx) == 0:
@@ -264,7 +332,9 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
     optimizer = torch.optim.Adam(
         model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
     )
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(
+        weight=_class_weights(ds.y[fit_idx], n_classes) if cfg.class_weighted else None
+    )
 
     best_f1 = -1.0
     best_state = copy.deepcopy(model.state_dict())

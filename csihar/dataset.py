@@ -332,6 +332,28 @@ def split_cross_subject(
     return train_idx, test_idx
 
 
+def split_cross_environment(
+    ds: HarDataset, test_environment: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """All windows of one environment vs the rest — the second-room transfer
+    test the collection plan calls for. Same guarantees as the other group
+    splits: no environment straddles the split."""
+    known = set(ds.environments.tolist())
+    if test_environment not in known:
+        raise ValueError(
+            f"unknown environment {test_environment!r}; have {sorted(known)}"
+        )
+    test_mask = ds.environments == test_environment
+    if test_mask.all():
+        raise ValueError(
+            f"holding out {test_environment!r} would leave train empty"
+        )
+    train_idx = np.where(~test_mask)[0].astype(np.int64)
+    test_idx = np.where(test_mask)[0].astype(np.int64)
+    assert not set(ds.environments[train_idx]) & set(ds.environments[test_idx])
+    return train_idx, test_idx
+
+
 def iter_cross_subject(
     ds: HarDataset,
 ) -> Iterator[tuple[str, np.ndarray, np.ndarray]]:

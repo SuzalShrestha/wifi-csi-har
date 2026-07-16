@@ -166,10 +166,13 @@ def predict(bundle: ModelBundle, x: np.ndarray) -> tuple[list[str], np.ndarray]:
             f"expected (n_rx, T, S) or (B, n_rx, T, S), got shape {x.shape}"
         )
     n_rx = int(bundle.config["n_rx"])
+    n_time = int(bundle.config["n_time"])
     n_sub = int(bundle.config["n_subcarriers"])
-    if x.shape[1] != n_rx or x.shape[3] != n_sub:
+    if x.shape[1] != n_rx or x.shape[2] != n_time or x.shape[3] != n_sub:
+        # The CNN's adaptive pooling accepts any T, so a wrong window length
+        # would otherwise be scored silently on a shifted distribution.
         raise ValueError(
-            f"expected n_rx={n_rx} and n_subcarriers={n_sub}, "
+            f"expected n_rx={n_rx}, n_time={n_time}, n_subcarriers={n_sub}, "
             f"got shape {x.shape}"
         )
     z = (x - bundle.norm_mean[None, :, None, :]) / bundle.norm_std[None, :, None, :]

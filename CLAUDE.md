@@ -47,6 +47,10 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
 - `firmware/` — cloned espressif/esp-csi (git-ignored) + flash guide.
 - `docs/collection_protocol.md` — data collection rules; fill blanks, don't
   drift from it silently.
+- `docs/research_review.md` — 2026-07-16 literature audit: what was fixed
+  (regime-matched early-stopping val, class-weighted loss, fall-alert fast
+  path) and the deferred gaps with their triggers. Check it before adding
+  augmentation/denoising or touching evaluation code.
 
 ## Hard-won facts — do not rediscover these
 

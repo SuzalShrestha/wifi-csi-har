@@ -12,6 +12,7 @@ from csihar.dataset import (
     iter_cross_subject,
     load_dataset,
     save_dataset,
+    split_cross_environment,
     split_cross_session,
     split_cross_subject,
     split_random,
@@ -265,6 +266,29 @@ def test_split_cross_subject_invariants(dataset):
     assert set(dataset.subjects[train_idx]) == {"s2"}
     with pytest.raises(ValueError, match="unknown subject"):
         split_cross_subject(dataset, "nobody")
+
+
+def test_split_cross_environment_invariants():
+    n = 10
+    ds = HarDataset(
+        X=np.zeros((n, 1, 8, 4), np.float32),
+        y=(np.arange(n) % 2).astype(np.int64),
+        subjects=np.array(["s1"] * n),
+        sessions=np.array(["sess1"] * 6 + ["sess2"] * 4),
+        environments=np.array(["room_a"] * 6 + ["room_b"] * 4),
+    )
+    train_idx, test_idx = split_cross_environment(ds, "room_b")
+    assert not set(ds.environments[train_idx]) & set(ds.environments[test_idx])
+    assert len(train_idx) == 6 and len(test_idx) == 4
+    with pytest.raises(ValueError, match="unknown environment"):
+        split_cross_environment(ds, "nope")
+    only = HarDataset(
+        X=ds.X, y=ds.y,
+        subjects=ds.subjects, sessions=ds.sessions,
+        environments=np.array(["room_a"] * n),
+    )
+    with pytest.raises(ValueError, match="train empty"):
+        split_cross_environment(only, "room_a")
 
 
 def test_iter_cross_subject_covers_all_subjects(dataset):

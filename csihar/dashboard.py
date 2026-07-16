@@ -112,7 +112,7 @@ def _prediction_message(pred: Any) -> dict:
         "raw_label": str(pred.raw_label),
         "smoothed_label": str(pred.smoothed_label),
         "confidence": float(pred.confidence),
-        "fall": pred.smoothed_label == "falling",
+        "fall": bool(pred.fall_alert),
     }
 
 

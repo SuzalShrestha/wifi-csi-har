@@ -15,7 +15,14 @@ from csihar.models.inference import (
 )
 from csihar.preprocessing import PreprocessConfig
 from csihar.simulate import write_session
-from csihar.train import TrainConfig, norm_apply, norm_fit, train_model
+from csihar.train import (
+    TrainConfig,
+    _class_weights,
+    _grouped_val_split,
+    norm_apply,
+    norm_fit,
+    train_model,
+)
 
 # ---------------------------------------------------------------- TrainConfig
 
@@ -151,6 +158,40 @@ def test_predict_rejects_wrong_shapes(tmp_path):
         predict(bundle, np.zeros((64, 32), np.float32))  # 2-D
     with pytest.raises(ValueError):
         predict(bundle, np.zeros((3, 64, 32), np.float32))  # wrong n_rx
+    with pytest.raises(ValueError):
+        # wrong T: adaptive pooling would silently accept it otherwise
+        predict(bundle, np.zeros((2, 128, 32), np.float32))
+
+
+# ------------------------------------------------- validation split + weights
+
+
+def test_grouped_val_split_holds_out_whole_sessions():
+    y = np.tile(np.array([0, 1]), 20)  # both classes in every session
+    sessions = np.repeat(np.array(["a", "b", "c", "d"]), 10)
+    fit_pos, val_pos = _grouped_val_split(y, sessions, val_fraction=0.25, seed=0)
+    assert len(val_pos) > 0 and len(fit_pos) > 0
+    assert not set(sessions[fit_pos]) & set(sessions[val_pos])  # no straddling
+    assert set(y[fit_pos].tolist()) == {0, 1}  # fit keeps every class
+    assert len(fit_pos) + len(val_pos) == len(y)
+
+
+def test_grouped_val_split_single_session_falls_back_stratified():
+    y = np.tile(np.array([0, 1]), 10)
+    sessions = np.full(20, "only")
+    with pytest.warns(UserWarning, match="single session"):
+        fit_pos, val_pos = _grouped_val_split(y, sessions, 0.2, seed=0)
+    assert len(fit_pos) + len(val_pos) == 20 and len(val_pos) > 0
+
+
+def test_class_weights_inverse_frequency():
+    y = np.array([0] * 90 + [5] * 10)
+    w = _class_weights(y, n_classes=6)
+    assert w.shape == (6,)
+    assert w[5] > w[0]  # scarce class weighted up
+    assert (w[np.array([1, 2, 3, 4])] == 1.0).all()  # absent classes neutral
+    # weighted total count preserved: sum_c w_c * n_c == n
+    assert float(w[0] * 90 + w[5] * 10) == pytest.approx(100.0)
 
 
 # ---------------------------------------------------------- end-to-end smoke

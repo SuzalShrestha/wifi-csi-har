@@ -125,6 +125,46 @@ def test_make_realtime_window_truncated_coverage_returns_none():
     assert window is None
 
 
+# -------------------------------------------------------- fall alert fast path
+
+
+def test_fall_alert_fires_on_confident_raw_fall_and_history_is_bounded(monkeypatch):
+    import csihar.realtime as rt
+
+    cfg = PreprocessConfig()
+    buffers, _ = _feed_session_into_buffers("walking", duration_s=5.0)
+    script = iter(
+        [("walking", 0.9), ("walking", 0.9), ("falling", 0.9), ("falling", 0.3)]
+    )
+
+    def fake_predict(bundle, window):
+        label, conf = next(script)
+        dist = np.full((1, 6), (1.0 - conf) / 5.0, dtype=np.float32)
+        dist[0, 0] = conf
+        return [label], dist
+
+    monkeypatch.setattr(rt, "predict", fake_predict)
+    engine = RealtimeEngine(
+        bundle=None, pre_cfg=cfg,
+        smoother=SmootherConfig(vote_k=3, min_confidence=0.6),
+    )
+    engine._buffers = buffers
+
+    p1 = engine.tick(4.0)
+    p2 = engine.tick(4.0)
+    p3 = engine.tick(4.0)
+    p4 = engine.tick(4.0)
+    assert p1.fall_alert is False and p2.fall_alert is False
+    # A single confident fall window loses the 3-vote majority (smoothed stays
+    # "walking") but must still raise the safety-critical alert.
+    assert p3.smoothed_label == "walking"
+    assert p3.fall_alert is True
+    # Low-confidence fall: no alert.
+    assert p4.fall_alert is False
+    # History is pruned to vote_k, so long demos don't grow memory unbounded.
+    assert len(engine._history) == 3
+
+
 # ---------------------------------------------------------- engine e2e smoke
 
 

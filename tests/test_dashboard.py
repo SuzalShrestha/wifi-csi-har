@@ -26,6 +26,7 @@ class _Prediction:
     raw_label: str
     confidence: float
     smoothed_label: str
+    fall_alert: bool = False
 
 
 @dataclass
@@ -117,7 +118,8 @@ def test_websocket_receives_csi_messages_with_52_amplitudes():
 def test_websocket_receives_prediction_messages_with_fall_flag():
     tick_script = [
         _Prediction(ts=1.0, raw_label="walking", confidence=0.9, smoothed_label="walking"),
-        _Prediction(ts=2.0, raw_label="falling", confidence=0.95, smoothed_label="falling"),
+        _Prediction(ts=2.0, raw_label="falling", confidence=0.95,
+                    smoothed_label="falling", fall_alert=True),
     ]
     app, _ = _make_app(tick_script=tick_script)
     client = TestClient(app)

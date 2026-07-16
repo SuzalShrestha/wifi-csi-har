@@ -160,6 +160,9 @@ class Prediction:
     raw_label: str
     confidence: float
     smoothed_label: str
+    # A fall is a transient (1-2 windows): it can lose every majority vote,
+    # so the safety-critical alert bypasses smoothing on a confident raw hit.
+    fall_alert: bool = False
 
 
 class RealtimeEngine:
@@ -199,10 +202,14 @@ class RealtimeEngine:
         raw_label = labels[0]
         confidence = float(confidences[0].max())
         self._history.append((raw_label, confidence))
+        del self._history[: -self.smoother.vote_k]  # bound memory on long runs
         smoothed = smooth_predictions(tuple(self._history), self.smoother)
+        fall_alert = smoothed == "falling" or (
+            raw_label == "falling" and confidence >= self.smoother.min_confidence
+        )
         return Prediction(
             ts=t_end, raw_label=raw_label, confidence=confidence,
-            smoothed_label=smoothed,
+            smoothed_label=smoothed, fall_alert=fall_alert,
         )
 
 
@@ -259,7 +266,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     bundle = load_checkpoint(args.checkpoint)
-    pre_cfg = PreprocessConfig()
+    # Window length must match training: the CNN accepts any T (adaptive
+    # pooling), so a mismatched window would be silently mis-scored.
+    pre_cfg = PreprocessConfig(
+        window_s=int(bundle.config["n_time"]) / PreprocessConfig.fs
+    )
     smoother = SmootherConfig()
     engine = RealtimeEngine(bundle, pre_cfg, smoother)
 
