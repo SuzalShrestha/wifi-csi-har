@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,14 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
-from .dataset import HarDataset, iter_cross_subject, load_dataset, split_cross_session, split_random
+from .dataset import (
+    HarDataset,
+    iter_cross_subject,
+    load_dataset,
+    split_coverage_note,
+    split_cross_session,
+    split_random,
+)
 from .evaluate import MetricsReport, append_result, compute_metrics, save_confusion_matrix
 from .features import extract_features
 
@@ -49,6 +57,9 @@ def _score_fold(
     test_idx: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, MetricsReport]:
     """Fit model on train rows only; return (y_true, y_pred, report)."""
+    coverage = split_coverage_note(ds, train_idx, test_idx)
+    if coverage:
+        warnings.warn(f"{coverage} - this fold's metrics are uninterpretable")
     model.fit(features[train_idx], ds.y[train_idx])
     y_pred = model.predict(features[test_idx])
     y_true = ds.y[test_idx]
@@ -87,7 +98,8 @@ def run_baseline(
             append_result(
                 results_csv, model=name, split="random", seed=seed,
                 config="baseline", report=report,
-                n_train=len(train_idx), n_test=len(test_idx), notes="",
+                n_train=len(train_idx), n_test=len(test_idx),
+                notes=split_coverage_note(ds, train_idx, test_idx),
             )
             save_confusion_matrix(
                 y_true, y_pred, ds.label_names,
@@ -105,7 +117,8 @@ def run_baseline(
             append_result(
                 results_csv, model=name, split="cross-session", seed=seed,
                 config="baseline", report=report,
-                n_train=len(train_idx), n_test=len(test_idx), notes="",
+                n_train=len(train_idx), n_test=len(test_idx),
+                notes=split_coverage_note(ds, train_idx, test_idx),
             )
             save_confusion_matrix(
                 y_true, y_pred, ds.label_names,
@@ -127,7 +140,12 @@ def run_baseline(
                     results_csv, model=name, split="cross-subject", seed=seed,
                     config="baseline", report=report,
                     n_train=len(train_idx), n_test=len(test_idx),
-                    notes=f"fold={subject}",
+                    notes="; ".join(
+                        part for part in (
+                            f"fold={subject}",
+                            split_coverage_note(ds, train_idx, test_idx),
+                        ) if part
+                    ),
                 )
                 rows.append((name, f"cross-subject:{subject}", report))
                 all_true.append(y_true)

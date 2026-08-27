@@ -23,9 +23,12 @@ measure real-time latency, then write the report chapters.
 .venv/bin/pip install -e ".[dev,ml,demo]"           # after dependency changes
 .venv/bin/python -m csihar.view --simulate walking  # pipeline demo, no hardware
 .venv/bin/python -m csihar.view --live <port>       # live heatmap from a board
+.venv/bin/python -m csihar.preflight --help         # verify the rig BEFORE recording
 .venv/bin/python -m csihar.collector --help         # record a session
+.venv/bin/python -m csihar.datasheet datasets/raw    # collection progress vs M3 targets
 .venv/bin/python -m csihar.experiments --help       # Phase 4 ablations
 .venv/bin/python -m csihar.dashboard --help         # Phase 5 demo dashboard
+.venv/bin/python -m csihar.latency --help           # pipeline latency benchmark
 make figures                                        # regenerate report figures
 make report                                         # build LaTeX report (needs TeX)
 ```
@@ -39,12 +42,29 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
   esp-csi `csi_recv_router` (see below). Don't change without re-checking
   firmware source.
 - `csihar/collector.py` — threaded 3-receiver serial capture → Parquet.
+- `csihar/preflight.py` — 10 s live check before a session: every receiver
+  present, at rate, on one channel. Run it first; it is far cheaper than
+  discovering a dead board after a 25-minute recording.
+- `csihar/session_script.py` — guided multi-segment session: one continuous
+  recording, `labels.json` sidecar of host-clock label ranges. Use this for
+  pilot/full collection rather than one file per activity.
+- `csihar/traffic.py` — UDP downlink generator; `downlink_traffic()` context
+  manager and `add_traffic_argument()` are the shared wiring every live
+  entry point uses.
 - `csihar/preprocessing/` — pure functions: subcarriers, filters, windowing,
   normalize.
 - `csihar/simulate.py` — synthetic CSI in byte-exact firmware format; use it
   to develop/test anything downstream without hardware.
-- `csihar/storage.py` — Parquet + metadata.json session layout.
+- `csihar/storage.py` — Parquet + metadata.json session layout. Set
+  `exclude_from_dataset=True` on rig-test captures; `assemble_dataset` and
+  `datasheet` both honour it. A note in `notes` is not enough — nothing reads
+  it, and an uncontrolled-room capture reached a reported result that way.
+- `csihar/datasheet.py` — running collection report: seconds and estimated
+  windows per class/subject/session against the M3 targets.
 - `firmware/` — cloned espressif/esp-csi (git-ignored) + flash guide.
+- `csihar/latency.py` — per-stage latency benchmark (parse/ingest/window/
+  inference) over a simulated or replayed session; runs against an untrained
+  model since latency is weight-independent.
 - `docs/collection_protocol.md` — data collection rules; fill blanks, don't
   drift from it silently.
 - `docs/research_review.md` — 2026-07-16 literature audit: what was fixed
@@ -66,14 +86,40 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
 - **CSI needs sustained UDP downlink traffic** (confirmed 2026-07-13): with
   only the firmware's ping, the router sends replies/beacons at DSSS/CCK
   rates which carry no OFDM LTF → <1 Hz CSI. The host must flood each
-  receiver's IP with ~100 pkt/s of 200-byte UDP (`csihar/traffic.py`,
-  `--traffic` flag on collector/view) → steady 100 Hz. Not an IDF version
-  issue (identical on v5.3.2 and v5.4.4).
+  receiver's IP with ~100 pkt/s of 200-byte UDP → steady 100 Hz. Not an IDF
+  version issue (identical on v5.3.2 and v5.4.4). **Every entry point that
+  reads live from the boards takes `--traffic IP` (repeatable) and routes it
+  through `traffic.downlink_traffic`** — collector, session_script, view,
+  realtime, dashboard. `tests/test_traffic.py` pins this for all five;
+  session_script/realtime/dashboard shipped without it once and would have
+  silently recorded worthless sessions.
 - Firmware needs `esp_wifi_set_ps(WIFI_PS_NONE)` and a **custom console
   UART** (USB-JTAG console sends CSI out the wrong USB port; baud is only
   configurable in custom mode). Both captured in
   `firmware/patches/csihar.patch` — apply after any esp-csi re-clone.
 - **Serial must be 921600 baud** (115200 drops lines at 100 pkt/s).
+- **Plug into the devkit's UART USB-C port, not the native USB port.** Both
+  enumerate, and the native USB port emits CSI too (115200 secondary
+  console), so a board on the wrong port looks like it is working — this
+  cost a bring-up session. Tell them apart on macOS: the UART bridge is
+  `USB Single Serial` (CH343, `/dev/cu.usbmodem5XXXXXXXXXX`), the native
+  port is `USB JTAG_serial debug unit` (VID 0x303a PID 0x1001). Only the
+  UART path is validated at 100 Hz.
+- **Don't reset a board with DTR/RTS over the native USB port** — the
+  esptool-style pulse drops ESP32-S3 into `waiting for download`, which
+  reads exactly like an unflashed board. Verified boards look blank this way.
+- **Verified end-to-end 2026-08-27** (3 boards, SSID `shrestha`, ch 6 BW20):
+  100.2-100.6 Hz per receiver, 0 dropped sequence numbers, 0 malformed lines
+  over 20 s; 2500 live frames parsed with 0 errors and
+  `detect_null_subcarriers` again returning exactly DC + bins 27-37. Port /
+  IP / MAC table is in `docs/collection_protocol.md`.
+- **Pipeline latency is structural, not computational.** Measured 2026-08-27
+  (`csihar/latency.py`, 3 receivers, 3 s window / 1.5 s hop, replaying the
+  real bring-up capture): tick compute p95 ~23 ms against a 1500 ms hop
+  budget — 65x headroom. Window construction (hampel + detrend + resample) is
+  ~85% of that; inference is ~3 ms; parse and ingest are ~0.02 ms per frame.
+  End-to-end delay is dominated by the 3 s of buffering a window needs. To cut
+  latency, shorten `window_s` — optimizing code will not move it.
 - **Amplitude only.** Single antenna → raw phase is CFO/SFO-corrupted;
   multi-antenna phase sanitization is impossible on this hardware. Don't
   build phase features into the main pipeline.

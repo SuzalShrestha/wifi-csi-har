@@ -25,7 +25,7 @@ import serial
 
 from .parser import CsiFrame, CsiParseError, parse_line
 from .storage import frames_to_dataframe, write_session_metadata
-from .traffic import TrafficGenerator
+from .traffic import add_traffic_argument, downlink_traffic
 
 BAUD_RATE = 921600  # 115200 cannot sustain 100 pkt/s * ~700 B/line
 
@@ -79,32 +79,30 @@ def run_session(
         receivers=ports, notes=notes,
     )
 
-    # Router sends sparse frames at DSSS rates (no CSI on ESP32-S3); steady
-    # UDP downlink forces OFDM/HT rates and ~100 Hz CSI. See csihar/traffic.py.
-    traffic = TrafficGenerator(traffic_ips).start() if traffic_ips else None
-
     stop = threading.Event()
     states = [ReceiverState(port=p, receiver_id=r) for p, r in ports.items()]
     threads = [
         threading.Thread(target=read_receiver, args=(s, stop), daemon=True)
         for s in states
     ]
-    for t in threads:
-        t.start()
 
-    start = time.time()
-    try:
-        while time.time() - start < duration_s:
-            time.sleep(2.0)
-            _print_status(states, time.time() - start)
-    except KeyboardInterrupt:
-        print("\nstopping early (Ctrl-C)")
-    finally:
-        stop.set()
+    # Router sends sparse frames at DSSS rates (no CSI on ESP32-S3); steady
+    # UDP downlink forces OFDM/HT rates and ~100 Hz CSI. See csihar/traffic.py.
+    with downlink_traffic(traffic_ips):
         for t in threads:
-            t.join(timeout=3)
-        if traffic is not None:
-            traffic.stop()
+            t.start()
+
+        start = time.time()
+        try:
+            while time.time() - start < duration_s:
+                time.sleep(2.0)
+                _print_status(states, time.time() - start)
+        except KeyboardInterrupt:
+            print("\nstopping early (Ctrl-C)")
+        finally:
+            stop.set()
+            for t in threads:
+                t.join(timeout=3)
 
     for s in states:
         if not s.frames:
@@ -138,11 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--duration", type=float, default=60.0, help="seconds")
     ap.add_argument("--out", type=Path, default=Path("datasets/raw"))
     ap.add_argument("--notes", default="")
-    ap.add_argument(
-        "--traffic", action="append", metavar="IP", default=[],
-        help="receiver IP to flood with UDP during capture (repeatable); "
-        "required with a real router or CSI drops to <1 Hz",
-    )
+    add_traffic_argument(ap)
     args = ap.parse_args(argv)
 
     ports: dict[str, str] = {}

@@ -1,0 +1,5 @@
+timestamp,git_sha,model,split,seed,config,accuracy,macro_f1,falling_recall,n_train,n_test,notes
+2026-08-28T00:15:22,f5eb75a,svm_rbf,random,0,baseline,0.9917,0.8261,,966,241,
+2026-08-28T00:15:23,f5eb75a,random_forest,random,0,baseline,0.9793,0.8143,,966,241,
+2026-08-28T00:15:28,f5eb75a,svm_rbf,cross-session,0,baseline,0.0025,0.0008,,809,398,"DEGENERATE SPLIT - test missing 4 class(es): lying, sitting, standing, walking"
+2026-08-28T00:15:29,f5eb75a,random_forest,cross-session,0,baseline,0.0000,0.0000,,809,398,"DEGENERATE SPLIT - test missing 4 class(es): lying, sitting, standing, walking"

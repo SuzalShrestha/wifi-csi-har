@@ -19,7 +19,7 @@ Optional thresholds (defaults shown):
 
 ```bash
 .venv/bin/python -m csihar.qa datasets/raw/<session_dir> \
-    --min-rate-hz 90.0 --max-gap-fraction 0.05
+    --min-rate-hz 90.0 --max-gap-fraction 0.05 --min-mcs-fraction 0.9
 ```
 
 This prints one line per receiver (`rx1`, `rx2`, `rx3`, ...) and saves an
@@ -31,6 +31,7 @@ passed.
 
 ```
 rx1: n_frames=286 duration_s=2.99 rate_hz=95.31 gap_frac=0.0467 rssi_mean=-42.00 rssi_std=0.00 null_mismatch=False -> PASS
+  radio: ch=6 bw=0 drift=False mcs=7 mcs_frac=1.000
 ```
 
 - **n_frames / duration_s**: sanity-check these match what you expect from
@@ -41,6 +42,16 @@ rx1: n_frames=286 duration_s=2.99 rate_hz=95.31 gap_frac=0.0467 rssi_mean=-42.00
   didn't already discard.
 - **rssi_mean / rssi_std**: rough link-quality sanity check, not gated on by
   default.
+- **radio: ch / bw / drift**: the channel and bandwidth the session ran on,
+  and whether either one *changed* mid-session. Both must be pinned across
+  the whole dataset, so `drift=True` means the frames straddle two radio
+  environments.
+- **radio: mcs / mcs_frac**: the dominant modulation-and-coding scheme and
+  the fraction of frames at it. Unlike channel, MCS is chosen per packet by
+  the router's rate adaptation, so it is the *fraction* that matters.
+- **`-1` / `nan` in the radio line**: that column is absent, i.e. the session
+  predates `mcs`/`bandwidth` being persisted. Those checks are skipped rather
+  than failed.
 - **null_subcarrier_mismatch**: `True` means `detect_null_subcarriers` found
   empirically-dead subcarriers *inside* the theoretical usable band
   (`usable_lltf_indices`) — i.e. the buffer-ordering assumption may be wrong
@@ -53,6 +64,15 @@ rx1: n_frames=286 duration_s=2.99 rate_hz=95.31 gap_frac=0.0467 rssi_mean=-42.00
   console baud and try a different USB port/cable.
 - **High `seq_gap_fraction` (> 0.05)**: serial drops — same causes as above,
   or the host was under load and fell behind reading the port.
+- **`drift = True`**: the router changed channel or bandwidth during the
+  recording. On an auto-channel ISP router (see
+  `docs/collection_protocol.md`) this is the expected failure mode. The
+  session is **not** salvageable — discard and re-record, and if it recurs
+  switch to a dedicated AP where the channel can be pinned.
+- **Low `mcs_frac` (< 0.9)**: the link was unstable enough that rate
+  adaptation kept switching, which changes the CSI's effective SNR partway
+  through. Usually means interference or a marginal RSSI — check receiver
+  placement and the channel survey before re-recording.
 - **`null_subcarrier_mismatch = True`**: the subcarrier ordering assumption
   in `preprocessing/subcarriers.py` doesn't match this receiver's real
   output. **Escalate**: run `detect_null_subcarriers` directly against this

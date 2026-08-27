@@ -34,3 +34,4 @@ report/*.fls
 report/*.fdb_latexmk
 report/main.pdf
 report/chapters/*.aux
+datasets/rejected/

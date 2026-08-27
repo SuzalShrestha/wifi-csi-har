@@ -169,15 +169,33 @@ def assemble_session(session_dir: Path, cfg: PreprocessConfig) -> SessionWindows
     )
 
 
+def is_excluded(session_dir: Path) -> bool:
+    """True if the session's metadata marks it as not-for-training.
+
+    Bring-up and rig-test captures sit in datasets/raw next to real sessions.
+    Relying on whoever runs training to remember which is which is how an
+    uncontrolled room ends up contributing windows to a reported result.
+    """
+    meta_path = session_dir / "metadata.json"
+    if not meta_path.exists():
+        return False
+    return bool(json.loads(meta_path.read_text()).get("exclude_from_dataset", False))
+
+
 def assemble_dataset(raw_dir: Path, cfg: PreprocessConfig) -> HarDataset:
     """Assemble every session dir under raw_dir (those with metadata.json).
 
-    Sessions yielding zero windows are skipped and reported in one warning.
+    Sessions marked ``exclude_from_dataset`` are left out. Sessions yielding
+    zero windows are skipped and reported in one warning.
     """
-    session_dirs = sorted(
+    all_dirs = sorted(
         d for d in raw_dir.iterdir()
         if d.is_dir() and (d / "metadata.json").exists()
     )
+    excluded = [d.name for d in all_dirs if is_excluded(d)]
+    session_dirs = [d for d in all_dirs if not is_excluded(d)]
+    if excluded:
+        warnings.warn(f"excluded from dataset by metadata: {excluded}")
     if not session_dirs:
         raise ValueError(f"no session dirs with metadata.json under {raw_dir}")
 
@@ -266,6 +284,32 @@ def split_random(
     train_idx = np.sort(np.concatenate(train_parts)).astype(np.int64)
     test_idx = np.sort(np.concatenate(test_parts)).astype(np.int64)
     return train_idx, test_idx
+
+
+def split_coverage_note(
+    ds: HarDataset, train_idx: np.ndarray, test_idx: np.ndarray
+) -> str:
+    """Describe degenerate class coverage in a split, or "" if it is sound.
+
+    A test set missing classes the training set contains scores the model on a
+    different problem than it was fit for, and the resulting accuracy is
+    uninterpretable rather than bad. With few sessions this is easy to hit —
+    holding out whole sessions can remove every window of several classes —
+    and a bare number in the results CSV then reads as catastrophic failure.
+    """
+    train_classes = set(np.unique(ds.y[train_idx]).tolist())
+    test_classes = set(np.unique(ds.y[test_idx]).tolist())
+    missing_from_test = train_classes - test_classes
+    missing_from_train = test_classes - train_classes
+
+    parts = []
+    if missing_from_test:
+        names = ", ".join(sorted(ds.label_names[i] for i in missing_from_test))
+        parts.append(f"test missing {len(missing_from_test)} class(es): {names}")
+    if missing_from_train:
+        names = ", ".join(sorted(ds.label_names[i] for i in missing_from_train))
+        parts.append(f"train missing {len(missing_from_train)} class(es): {names}")
+    return "DEGENERATE SPLIT - " + "; ".join(parts) if parts else ""
 
 
 def split_cross_session(
