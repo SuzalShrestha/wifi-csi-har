@@ -39,9 +39,10 @@ Heavy training goes to Colab via `notebooks/train_colab.ipynb`; keep model
 code runnable on CPU for smoke tests.
 
 **Results are not reproducible across devices.** The same seed on CPU and MPS
-gave test accuracy 0.903 vs 0.929 on identical data. `device` is part of
-`TrainConfig` and is written into the results CSV's config column — pin it
-when reporting a number, and never compare rows trained on different devices.
+gave test accuracy 0.903 vs 0.929 on identical data; the same CNN on a Colab
+T4 gave 0.937. The *resolved* device (not `"auto"`) is written into the
+results CSV's config column — pin it when reporting a number, and never
+compare rows trained on different devices.
 
 ## Repo map
 
@@ -145,7 +146,13 @@ when reporting a number, and never compare rows trained on different devices.
 4. Every experiment: fixed seed, config committed, results CSV under
    `experiments/`. Figures regenerate from scripts — no hand-made plots.
    Seed alone does not pin a run: the device does too (see above).
-5. A split whose test set is missing classes the train set has is
+5. **A high accuracy with a macro-F1 near 1/n_classes is a degenerate
+   split, not a result** — Colab reported cross-session 0.9749 accuracy /
+   0.1645 macro-F1 on a test session holding only `background`. Both
+   `baseline` and `train` now call `split_coverage_note` and write it into
+   the CSV's `notes`; a cross-* row with an empty `notes` predates that fix.
+   The checkpoint from such a run is still usable — only the metric is void.
+6. A split whose test set is missing classes the train set has is
    **degenerate, not bad** — its accuracy is uninterpretable.
    `dataset.split_coverage_note` detects this, `baseline` warns and writes
    the reason into the results CSV. Cross-session needs activities in >= 2

@@ -22,7 +22,7 @@ import json
 import os
 import random
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +33,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from .dataset import (
     HarDataset,
     load_dataset,
+    split_coverage_note,
     split_cross_session,
     split_cross_subject,
     split_random,
@@ -319,6 +320,10 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
     _seed_everything(cfg.seed)
     device = resolve_device(cfg.device)
     print(f"device: {device}")
+    # Results rows must say which device ran, not "auto" - CPU and MPS give
+    # different accuracy on identical data and seeds, so an unresolved
+    # config column makes the row uncomparable to any other row.
+    cfg = replace(cfg, device=str(device))
 
     train_idx, test_idx, split_desc = _resolve_split(ds, cfg)
     y_train = ds.y[train_idx]
@@ -390,6 +395,10 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
     test_pred = _predict_classes(model, test_loader, device)
     report = compute_metrics(ds.y[test_idx], test_pred, ds.label_names)
 
+    coverage = split_coverage_note(ds, train_idx, test_idx)
+    if coverage:
+        warnings.warn(f"{coverage} - this run's metrics are uninterpretable")
+
     # Checkpoints must load on any machine — the realtime engine and the
     # dashboard run on the laptop's CPU, not wherever training happened.
     model = model.to("cpu")
@@ -411,7 +420,7 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
         report=report,
         n_train=len(train_idx),
         n_test=len(test_idx),
-        notes=cfg.notes,
+        notes="; ".join(part for part in (cfg.notes, coverage) if part),
     )
     figure_path = Path(cfg.figures_dir) / (
         f"cm_{cfg.model}_{split_desc.replace(':', '_')}.png"

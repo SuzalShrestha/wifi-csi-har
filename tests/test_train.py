@@ -1,10 +1,13 @@
 import csv
 import json
+from dataclasses import replace
+from unittest import mock
 
 import numpy as np
 import pytest
 import torch
 
+from csihar import train as train_module
 from csihar.dataset import LABEL_NAMES, assemble_dataset
 from csihar.models import build_model
 from csihar.models.inference import (
@@ -243,7 +246,11 @@ def test_train_model_smoke(sim_dataset, tmp_path):
     assert rows[0]["split"] == "random"
     assert rows[0]["seed"] == "0"
     assert float(rows[0]["accuracy"]) == pytest.approx(report.accuracy, abs=1e-3)
-    assert TrainConfig.from_json(rows[0]["config"]) == cfg
+    # Config round-trips exactly, except `device`, which is deliberately
+    # rewritten to the device that actually ran (see the resolved-device test).
+    written = TrainConfig.from_json(rows[0]["config"])
+    assert written == replace(cfg, device=written.device)
+    assert written.device == str(resolve_device(cfg.device))
 
     # confusion matrix figure regenerated from code
     assert (tmp_path / "figures" / "cm_cnn_random.png").exists()
@@ -300,3 +307,59 @@ def test_checkpoint_is_saved_on_cpu(sim_dataset, tmp_path):
     _, path = train_model(sim_dataset, cfg)
     payload = torch.load(path, map_location="cpu", weights_only=True)
     assert all(t.device.type == "cpu" for t in payload["state_dict"].values())
+
+
+def test_results_row_records_the_resolved_device_not_auto(sim_dataset, tmp_path):
+    """A config column saying "auto" cannot be compared across machines.
+
+    CPU and MPS produce different accuracy on identical data and seeds, so the
+    row has to name the hardware that actually ran, not the request for one.
+    """
+    cfg = TrainConfig(
+        model="cnn", split="random", epochs=1, batch_size=8, patience=1,
+        device="auto",
+        results_csv=str(tmp_path / "results" / "dl.csv"),
+        checkpoints_dir=str(tmp_path / "checkpoints"),
+        figures_dir=str(tmp_path / "figures"),
+    )
+    train_model(sim_dataset, cfg)
+
+    with open(cfg.results_csv, newline="") as fh:
+        row = next(csv.DictReader(fh))
+    recorded = json.loads(row["config"])["device"]
+    assert recorded != "auto"
+    assert recorded == str(resolve_device("auto"))
+
+
+def test_degenerate_split_is_warned_and_written_into_the_results_row(
+    sim_dataset, tmp_path
+):
+    """The DL path needs the same guardrail baseline.py has.
+
+    A cross-session test set holding one class scores ~0.97 accuracy while the
+    model has learned nothing; without the note the CSV looks like a result.
+    """
+    ds = sim_dataset
+    train_idx = np.flatnonzero(ds.y == ds.label_names.index("background"))
+    test_idx = np.flatnonzero(ds.y != ds.label_names.index("background"))
+    assert len(train_idx) and len(test_idx)
+
+    cfg = TrainConfig(
+        model="cnn", split="random", epochs=1, batch_size=8, patience=1,
+        device="cpu", notes="pilot",
+        results_csv=str(tmp_path / "results" / "dl.csv"),
+        checkpoints_dir=str(tmp_path / "checkpoints"),
+        figures_dir=str(tmp_path / "figures"),
+    )
+
+    def _degenerate(dataset, config):
+        return train_idx, test_idx, "cross-session"
+
+    with mock.patch.object(train_module, "_resolve_split", _degenerate):
+        with pytest.warns(UserWarning, match="DEGENERATE SPLIT"):
+            train_model(ds, cfg)
+
+    with open(cfg.results_csv, newline="") as fh:
+        row = next(csv.DictReader(fh))
+    assert "DEGENERATE SPLIT" in row["notes"]
+    assert "pilot" in row["notes"]  # the operator's own note survives

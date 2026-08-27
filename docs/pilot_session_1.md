@@ -84,6 +84,55 @@ containing only `background` while training had all five classes. Accuracy
 detects this, warns, and writes the reason into the results CSV so the number
 cannot be misread later.
 
+## Colab GPU run — 2026-08-28
+
+Both deep models were retrained on Colab (Tesla T4) from
+`MyDrive/wifi-csi-har-data/pilot_v0.npz`. Raw output preserved verbatim in
+`experiments/results/dl_colab.csv`; checkpoints and confusion matrices copied
+to `experiments/checkpoints/` and `docs/figures/colab/`.
+
+| model | split | accuracy | macro-F1 | trustworthy? |
+|---|---|---|---|---|
+| cnn | random | 0.9370 | 0.7717 | no — same temporal confound as above |
+| cnn_lstm | random | 0.9244 | 0.7616 | no — same |
+| cnn | cross-session | 0.9749 | 0.1645 | **no — degenerate split** |
+| cnn_lstm | cross-session | 0.9598 | 0.1632 | **no — degenerate split** |
+
+### The cross-session accuracy of 0.97 is an artifact, not a result
+
+`split_cross_session` put session `20260827_235706_sujal_background` in test:
+199 windows, **all of them `background`**, against 989 training windows
+covering all five classes. Scoring 97.5% on a single-class test set measures
+nothing, and the macro-F1 of 0.164 is the giveaway — four of six classes have
+no support, so they contribute zero regardless of the model.
+
+**The checkpoints themselves are sound.** Over all 1188 windows
+`cnn_cross-session_0.pt` predicts a healthy spread
+(background 393, walking 200, standing 200, sitting 198, lying 197) — it did
+not collapse to the majority class. It trained on more data than the
+random-split model (989 vs 950 windows) and is the better checkpoint to demo.
+It is the *metric* that is void, not the weights.
+
+The honest summary is that **this dataset cannot produce a cross-session
+number at all.** Only one session contains activities; hold it out and the
+test set is empty of them, keep it in and there is nothing left to hold out.
+Session 2 has to contain all five activities for the split to mean anything.
+
+### Two guardrail gaps this exposed
+
+1. `split_coverage_note` was wired into `baseline.py` but **not** `train.py`,
+   so the deep-learning path wrote a 0.9749 row with an empty `notes` column
+   that reads exactly like a real result. Now fixed and mutation-tested.
+2. The results `config` column recorded `"device": "auto"` rather than the
+   device that ran. Since CPU and MPS give different accuracy on identical
+   data and seeds, `"auto"` is exactly as useless as no field at all — the
+   whole point of committing the device was cross-machine comparability. The
+   resolved device is now written instead.
+
+`git_sha` is `unknown` in `dl_colab.csv` because Colab runs from a Drive copy
+with no `.git`. Clone the repo into Drive instead of copying it if that column
+needs to be meaningful.
+
 ## What this changes for session 2
 
 1. **Interleave background with the activities in the same session.** Use
