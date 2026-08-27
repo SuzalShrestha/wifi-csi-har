@@ -1,3 +1,4 @@
+import contextlib
 from pathlib import Path
 
 import pandas as pd
@@ -148,3 +149,93 @@ def test_run_scripted_session_with_fakes(tmp_path, monkeypatch):
     assert len(prompts) == 2
     assert "background" in prompts[0]
     assert "walking" in prompts[1]
+
+
+def test_scripted_session_runs_downlink_traffic(tmp_path, monkeypatch):
+    """The pilot harness must flood the receivers, or it records at <1 Hz."""
+    monkeypatch.setattr(
+        session_script, "read_receiver", _make_stub_read_receiver(n_frames=5)
+    )
+    seen: list[tuple[str, ...]] = []
+
+    @contextlib.contextmanager
+    def spy_traffic(targets, *args, **kwargs):
+        seen.append(tuple(targets or ()))
+        yield None
+
+    monkeypatch.setattr(session_script, "downlink_traffic", spy_traffic)
+
+    run_scripted_session(
+        ports={"/dev/fake1": "rx1"},
+        out_dir=tmp_path,
+        script=parse_script("walking:0.1"),
+        subject="s1",
+        environment="room_a",
+        prompt_fn=lambda _: "",
+        clock=_FakeClock(step=0.05),
+        traffic_ips=["192.168.1.97", "192.168.1.98"],
+    )
+
+    assert seen == [("192.168.1.97", "192.168.1.98")]
+
+
+def test_scripted_session_without_traffic_ips_still_runs(tmp_path, monkeypatch):
+    # Simulator/offline use must not require IPs.
+    monkeypatch.setattr(
+        session_script, "read_receiver", _make_stub_read_receiver(n_frames=5)
+    )
+    session_dir = run_scripted_session(
+        ports={"/dev/fake1": "rx1"},
+        out_dir=tmp_path,
+        script=parse_script("walking:0.1"),
+        subject="s1",
+        environment="room_a",
+        prompt_fn=lambda _: "",
+        clock=_FakeClock(step=0.05),
+    )
+    assert (session_dir / "labels.json").exists()
+
+
+def _spy_on_run(monkeypatch) -> dict:
+    """Replace run_scripted_session with a recorder, so main() can be tested
+    without serial ports or a real prompt."""
+    calls: dict = {}
+
+    def fake_run(*args, **kwargs):
+        calls.update(kwargs)
+        return Path("session")
+
+    monkeypatch.setattr(session_script, "run_scripted_session", fake_run)
+    return calls
+
+
+def test_cli_forwards_traffic_ips(tmp_path, monkeypatch):
+    calls = _spy_on_run(monkeypatch)
+
+    session_script.main(
+        [
+            "--port", "/dev/fake1=rx1",
+            "--script", "walking:10",
+            "--subject", "s1",
+            "--out", str(tmp_path),
+            "--traffic", "192.168.1.97",
+            "--traffic", "192.168.1.98",
+        ]
+    )
+
+    assert calls["traffic_ips"] == ["192.168.1.97", "192.168.1.98"]
+
+
+def test_cli_warns_when_no_traffic_ips_given(tmp_path, monkeypatch, capsys):
+    _spy_on_run(monkeypatch)
+
+    session_script.main(
+        [
+            "--port", "/dev/fake1=rx1",
+            "--script", "walking:10",
+            "--subject", "s1",
+            "--out", str(tmp_path),
+        ]
+    )
+
+    assert "no --traffic IPs given" in capsys.readouterr().err

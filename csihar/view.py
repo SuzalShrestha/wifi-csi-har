@@ -21,6 +21,7 @@ import numpy as np
 
 from .parser import parse_line, CsiParseError
 from .preprocessing import usable_lltf_indices
+from .traffic import add_traffic_argument, downlink_traffic
 
 
 def show_static(amplitudes: np.ndarray, title: str, out: Path | None = None) -> None:
@@ -109,28 +110,16 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--simulate", metavar="ACTIVITY", help="synthetic data")
     group.add_argument("--live", metavar="PORT", help="serial port for live view")
     ap.add_argument("--out", type=Path, help="save PNG instead of showing")
-    ap.add_argument(
-        "--traffic", metavar="IP",
-        help="board IP to flood with UDP while viewing (needed with a real "
-        "router or CSI drops to <1 Hz; see csihar/traffic.py)",
-    )
+    add_traffic_argument(ap)
     args = ap.parse_args(argv)
 
-    traffic = None
-    if args.traffic:
-        from .traffic import TrafficGenerator
-
-        traffic = TrafficGenerator([args.traffic]).start()
-    try:
+    with downlink_traffic(args.traffic):
         if args.replay:
             replay(args.replay, args.out)
         elif args.simulate:
             simulate(args.simulate, args.out)
         else:
             live(args.live)
-    finally:
-        if traffic is not None:
-            traffic.stop()
     return 0
 
 

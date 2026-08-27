@@ -40,6 +40,12 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
   esp-csi `csi_recv_router` (see below). Don't change without re-checking
   firmware source.
 - `csihar/collector.py` — threaded 3-receiver serial capture → Parquet.
+- `csihar/session_script.py` — guided multi-segment session: one continuous
+  recording, `labels.json` sidecar of host-clock label ranges. Use this for
+  pilot/full collection rather than one file per activity.
+- `csihar/traffic.py` — UDP downlink generator; `downlink_traffic()` context
+  manager and `add_traffic_argument()` are the shared wiring every live
+  entry point uses.
 - `csihar/preprocessing/` — pure functions: subcarriers, filters, windowing,
   normalize.
 - `csihar/simulate.py` — synthetic CSI in byte-exact firmware format; use it
@@ -70,9 +76,13 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
 - **CSI needs sustained UDP downlink traffic** (confirmed 2026-07-13): with
   only the firmware's ping, the router sends replies/beacons at DSSS/CCK
   rates which carry no OFDM LTF → <1 Hz CSI. The host must flood each
-  receiver's IP with ~100 pkt/s of 200-byte UDP (`csihar/traffic.py`,
-  `--traffic` flag on collector/view) → steady 100 Hz. Not an IDF version
-  issue (identical on v5.3.2 and v5.4.4).
+  receiver's IP with ~100 pkt/s of 200-byte UDP → steady 100 Hz. Not an IDF
+  version issue (identical on v5.3.2 and v5.4.4). **Every entry point that
+  reads live from the boards takes `--traffic IP` (repeatable) and routes it
+  through `traffic.downlink_traffic`** — collector, session_script, view,
+  realtime, dashboard. `tests/test_traffic.py` pins this for all five;
+  session_script/realtime/dashboard shipped without it once and would have
+  silently recorded worthless sessions.
 - Firmware needs `esp_wifi_set_ps(WIFI_PS_NONE)` and a **custom console
   UART** (USB-JTAG console sends CSI out the wrong USB port; baud is only
   configurable in custom mode). Both captured in

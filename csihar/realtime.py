@@ -27,6 +27,7 @@ from .models.inference import ModelBundle, load_checkpoint, predict
 from .preprocessing import PreprocessConfig, detrend_moving_mean, hampel, resample_uniform
 from .preprocessing.subcarriers import usable_lltf_indices
 from .realtime_sources import Frame, live_source, replay_source, simulate_source
+from .traffic import add_traffic_argument, downlink_traffic
 
 __all__ = [
     "SmootherConfig", "smooth_predictions",
@@ -260,6 +261,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--hop", type=float, default=1.5)
     ap.add_argument("--out", type=Path, default=None, metavar="predictions.csv")
+    add_traffic_argument(ap)
     return ap
 
 
@@ -297,7 +299,8 @@ def main(argv: list[str] | None = None) -> int:
         fh, writer = None, None
 
     try:
-        _run_stream(source, engine, args.hop, writer)
+        with downlink_traffic(args.traffic):
+            _run_stream(source, engine, args.hop, writer)
     finally:
         if fh is not None:
             fh.close()

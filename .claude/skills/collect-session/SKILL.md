@@ -16,20 +16,36 @@ Procedure for running one labeled data-collection session with rx1/rx2/rx3.
   Re-measure and re-tape tripod feet if this is a new room or the layout
   drifted.
 - Photograph the device layout before the session.
-- Note/confirm the router's WiFi channel (fixed 2.4 GHz, HT20, band
-  steering off) in `docs/collection_protocol.md`.
+- Note/confirm the router's WiFi channel (2.4 GHz, HT20, band steering off)
+  in `docs/collection_protocol.md`. The current router is ISP-supplied and
+  on auto-select, so the channel **cannot be pinned** — QA checks every
+  session for a mid-session hop instead.
+- Confirm each receiver's current IP (DHCP leases move). You need them for
+  `--traffic`, and **without `--traffic` the boards emit <1 Hz of CSI and
+  the session is worthless.** This is the single most common way to waste a
+  collection session.
 
 ## 2. Run the collector
 
+Two harnesses, depending on whether the recording covers one activity or
+several. Ports and IPs below are the verified ones from
+`docs/collection_protocol.md` — re-confirm the IPs first.
+
+### Single-activity session (`csihar.collector`)
+
 ```bash
 .venv/bin/python -m csihar.collector \
-  --port /dev/cu.usbmodemXX1=rx1 --port /dev/cu.usbmodemXX2=rx2 \
-  --port /dev/cu.usbmodemXX3=rx3 \
+  --port /dev/cu.usbmodem5B5E0807741=rx1 \
+  --port /dev/cu.usbmodem5C842982391=rx2 \
+  --port /dev/cu.usbmodem5C842990031=rx3 \
+  --traffic 192.168.1.97 --traffic 192.168.1.98 --traffic 192.168.1.99 \
   --label walking --subject sujal --env room_a --duration 300
 ```
 
 - `--port DEV=ID` is repeatable, one per receiver (`DEV` = serial port,
   `ID` = receiver label rx1/rx2/rx3).
+- `--traffic IP` is repeatable, one per receiver. **Not optional against a
+  real router.**
 - Valid `--label` values: `walking`, `sitting`, `standing`, `lying`,
   `falling`, `background`.
 - `--subject` is the subject's name/id, `--env` the room/environment tag,
@@ -40,6 +56,27 @@ Per-session script (operator reads aloud, subject follows):
 2. 10 s of `background` with the subject outside the room — sanity
    reference.
 3. 5 min of the target activity.
+
+### Multi-activity scripted session (`csihar.session_script`)
+
+Preferred for pilot and full-dataset collection: one continuous recording
+that steps the operator through timed segments and writes a `labels.json`
+sidecar mapping host-clock ranges to labels. Fewer start/stop boundaries and
+no chance of mislabeling a whole file.
+
+```bash
+.venv/bin/python -m csihar.session_script \
+  --port /dev/cu.usbmodem5B5E0807741=rx1 \
+  --port /dev/cu.usbmodem5C842982391=rx2 \
+  --port /dev/cu.usbmodem5C842990031=rx3 \
+  --traffic 192.168.1.97 --traffic 192.168.1.98 --traffic 192.168.1.99 \
+  --script "background:30,walking:300,standing:300,sitting:300,lying:300" \
+  --subject sujal --env room_a
+```
+
+It prompts before each segment and waits for Enter, so the subject can get
+into position; the segment clock starts only after that. Run falls as their
+own session (see the safety rules below), not as a segment in a long script.
 
 ### Fall sessions — safety rules
 

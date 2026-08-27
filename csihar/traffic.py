@@ -10,17 +10,21 @@ UDP to the board's IP yields a steady 100 Hz.
 Run standalone:
     python -m csihar.traffic 192.168.1.79 192.168.1.80 --rate 100
 
-or pass ``--traffic <ip>`` to the collector / viewer, which embed a
-TrafficGenerator for the session duration.
+or pass ``--traffic <ip>`` to any entry point that reads live from the
+boards (collector, session_script, view, realtime, dashboard). They all go
+through ``downlink_traffic``, which owns the start/stop lifetime — forgetting
+it is how you get a session recorded at <1 Hz.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import socket
 import sys
 import threading
 import time
+from typing import Iterator, Sequence
 
 DEFAULT_RATE_HZ = 100.0
 DEFAULT_PAYLOAD_BYTES = 200
@@ -74,6 +78,37 @@ class TrafficGenerator:
     def stop(self) -> None:
         self._stop.set()
         self._thread.join(timeout=2)
+
+
+@contextlib.contextmanager
+def downlink_traffic(
+    targets: Sequence[str] | None,
+    rate_hz: float = DEFAULT_RATE_HZ,
+) -> Iterator["TrafficGenerator | None"]:
+    """Flood `targets` with UDP for the duration of the block.
+
+    A no-op yielding None when `targets` is empty or None, so callers can wrap
+    live-capture code unconditionally instead of repeating a start/stop
+    try/finally at every entry point.
+    """
+    if not targets:
+        yield None
+        return
+    generator = TrafficGenerator(list(targets), rate_hz=rate_hz).start()
+    try:
+        yield generator
+    finally:
+        generator.stop()
+
+
+def add_traffic_argument(ap: argparse.ArgumentParser) -> None:
+    """Add the shared, repeatable ``--traffic IP`` flag to a parser."""
+    ap.add_argument(
+        "--traffic", action="append", metavar="IP", default=[],
+        help="receiver IP to flood with UDP downlink during capture "
+        "(repeatable; REQUIRED with a real router or CSI drops to <1 Hz — "
+        "see csihar/traffic.py)",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

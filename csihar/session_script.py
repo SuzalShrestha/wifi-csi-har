@@ -11,7 +11,11 @@ Usage:
         --port /dev/cu.usbmodem101=rx1 --port /dev/cu.usbmodem102=rx2 \
         --port /dev/cu.usbmodem103=rx3 \
         --script "background:10,walking:60,sitting:60" \
+        --traffic 192.168.1.97 --traffic 192.168.1.98 --traffic 192.168.1.99 \
         --subject sujal --env room_a --out datasets/raw
+
+``--traffic`` is not optional against a real router: without sustained UDP
+downlink the boards emit <1 Hz of CSI and the whole session is worthless.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from typing import Callable
 
 from .collector import BAUD_RATE, ReceiverState, read_receiver
 from .storage import frames_to_dataframe, write_session_metadata
+from .traffic import add_traffic_argument, downlink_traffic
 
 VALID_LABELS = frozenset(
     {"walking", "sitting", "standing", "lying", "falling", "background"}
@@ -130,6 +135,7 @@ def run_scripted_session(
     notes: str = "",
     prompt_fn: Callable[[str], str] = input,
     clock: Callable[[], float] = time.time,
+    traffic_ips: list[str] | None = None,
 ) -> Path:
     """Record continuously while stepping the operator through `script`.
 
@@ -137,6 +143,9 @@ def run_scripted_session(
     identical to a plain session. Writes one parquet per receiver plus
     metadata.json (label="scripted") and labels.json with per-segment
     start/end host-clock timestamps.
+
+    ``traffic_ips`` must be supplied against a real router — see
+    csihar/traffic.py for why CSI collapses to <1 Hz without it.
     """
     session_name = f"{time.strftime('%Y%m%d_%H%M%S')}_{subject}_scripted"
     session_dir = out_dir / session_name
@@ -151,28 +160,31 @@ def run_scripted_session(
         threading.Thread(target=read_receiver, args=(s, stop), daemon=True)
         for s in states
     ]
-    for t in threads:
-        t.start()
 
     timed_segments: list[TimedSegment] = []
-    try:
-        for segment in script:
-            prompt_fn(
-                f"NEXT: {segment.label} for {segment.duration_s:.0f}s — "
-                "press Enter when subject is ready"
-            )
-            start_ts = clock()
-            _wait_segment(segment.duration_s, segment.label, clock)
-            end_ts = clock()
-            timed_segments.append(
-                TimedSegment(label=segment.label, start_ts=start_ts, end_ts=end_ts)
-            )
-    except KeyboardInterrupt:
-        print("\nstopping early (Ctrl-C)")
-    finally:
-        stop.set()
+    with downlink_traffic(traffic_ips):
         for t in threads:
-            t.join(timeout=3)
+            t.start()
+        try:
+            for segment in script:
+                prompt_fn(
+                    f"NEXT: {segment.label} for {segment.duration_s:.0f}s — "
+                    "press Enter when subject is ready"
+                )
+                start_ts = clock()
+                _wait_segment(segment.duration_s, segment.label, clock)
+                end_ts = clock()
+                timed_segments.append(
+                    TimedSegment(
+                        label=segment.label, start_ts=start_ts, end_ts=end_ts
+                    )
+                )
+        except KeyboardInterrupt:
+            print("\nstopping early (Ctrl-C)")
+        finally:
+            stop.set()
+            for t in threads:
+                t.join(timeout=3)
 
     for s in states:
         if not s.frames:
@@ -203,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--env", default="room_a")
     ap.add_argument("--out", type=Path, default=Path("datasets/raw"))
     ap.add_argument("--notes", default="")
+    add_traffic_argument(ap)
     args = ap.parse_args(argv)
 
     ports: dict[str, str] = {}
@@ -218,8 +231,17 @@ def main(argv: list[str] | None = None) -> int:
         ap.error(str(exc))
         return 2
 
+    if not args.traffic:
+        print(
+            "WARNING: no --traffic IPs given. Against a real router CSI will "
+            "collapse to <1 Hz and this session will be worthless. Continue "
+            "only if you are testing without hardware.",
+            file=sys.stderr,
+        )
+
     session_dir = run_scripted_session(
         ports, args.out, script, args.subject, args.env, args.notes,
+        traffic_ips=args.traffic,
     )
     print(f"\nsession saved: {session_dir}")
     return 0

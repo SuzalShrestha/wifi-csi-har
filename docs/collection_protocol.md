@@ -107,7 +107,13 @@ from window labels during preprocessing.
 - ≥5 min per activity per subject
 - One extra half-session in a second room (transfer test set)
 
-## Session command template
+## Session command templates
+
+`--traffic` is **required** against a real router — without sustained UDP
+downlink the boards emit <1 Hz of CSI. Re-confirm the IPs before every
+session; they are DHCP leases.
+
+Single activity:
 ```bash
 .venv/bin/python -m csihar.collector \
   --port /dev/cu.usbmodem5B5E0807741=rx1 \
@@ -115,4 +121,16 @@ from window labels during preprocessing.
   --port /dev/cu.usbmodem5C842990031=rx3 \
   --traffic 192.168.1.97 --traffic 192.168.1.98 --traffic 192.168.1.99 \
   --label walking --subject sujal --env room_a --duration 300
+```
+
+Multi-activity scripted session (preferred for pilot and full collection —
+one continuous recording plus a `labels.json` sidecar):
+```bash
+.venv/bin/python -m csihar.session_script \
+  --port /dev/cu.usbmodem5B5E0807741=rx1 \
+  --port /dev/cu.usbmodem5C842982391=rx2 \
+  --port /dev/cu.usbmodem5C842990031=rx3 \
+  --traffic 192.168.1.97 --traffic 192.168.1.98 --traffic 192.168.1.99 \
+  --script "background:30,walking:300,standing:300,sitting:300,lying:300" \
+  --subject sujal --env room_a
 ```

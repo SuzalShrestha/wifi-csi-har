@@ -35,6 +35,7 @@ import numpy as np
 
 from .preprocessing.subcarriers import usable_lltf_indices
 from .realtime_sources import Frame, live_source, replay_source, simulate_source
+from .traffic import add_traffic_argument, downlink_traffic
 
 try:
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -258,6 +259,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--hop", type=float, default=1.5)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
+    add_traffic_argument(ap)
     return ap
 
 
@@ -294,7 +296,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("one of --replay, --simulate, --live is required")
 
     app = create_app(engine, source_factory, hop_s=args.hop)
-    uvicorn.run(app, host=args.host, port=args.port)
+    with downlink_traffic(args.traffic):
+        uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
 
