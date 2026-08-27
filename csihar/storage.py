@@ -24,6 +24,8 @@ def frames_to_dataframe(frames: list[CsiFrame]) -> pd.DataFrame:
             "seq": [f.seq for f in frames],
             "rssi": [f.rssi for f in frames],
             "noise_floor": [f.noise_floor for f in frames],
+            "mcs": [f.mcs for f in frames],
+            "bandwidth": [f.bandwidth for f in frames],
             "channel": [f.channel for f in frames],
             "local_timestamp": [f.local_timestamp for f in frames],
             "csi_real": [f.csi.real.astype(np.float32) for f in frames],
