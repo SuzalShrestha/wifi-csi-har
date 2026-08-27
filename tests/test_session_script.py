@@ -239,3 +239,67 @@ def test_cli_warns_when_no_traffic_ips_given(tmp_path, monkeypatch, capsys):
     )
 
     assert "no --traffic IPs given" in capsys.readouterr().err
+
+
+def test_lead_in_delays_the_labelled_span(tmp_path, monkeypatch):
+    """Background needs the room empty BEFORE the label starts.
+
+    Without this, a lone subject has to record background as its own session,
+    and the model then learns the session rather than the absence of a person.
+    """
+    monkeypatch.setattr(
+        session_script, "read_receiver", _make_stub_read_receiver(n_frames=5)
+    )
+    clock = _FakeClock(start=1000.0, step=1.0)
+
+    session_dir = run_scripted_session(
+        ports={"/dev/fake1": "rx1"},
+        out_dir=tmp_path,
+        script=parse_script("background:5"),
+        subject="s1",
+        environment="room_a",
+        prompt_fn=lambda _: "",
+        clock=clock,
+        lead_in_s=10.0,
+    )
+
+    import json
+
+    segment = json.loads((session_dir / "labels.json").read_text())["segments"][0]
+    # Enter is pressed at ~1000; the label must not start until the lead-in
+    # has elapsed, so the subject's walk out of the room is excluded.
+    assert segment["start_ts"] >= 1010.0
+    assert segment["end_ts"] - segment["start_ts"] >= 5.0
+
+
+def test_zero_lead_in_starts_immediately(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        session_script, "read_receiver", _make_stub_read_receiver(n_frames=5)
+    )
+    clock = _FakeClock(start=1000.0, step=1.0)
+
+    session_dir = run_scripted_session(
+        ports={"/dev/fake1": "rx1"},
+        out_dir=tmp_path,
+        script=parse_script("walking:5"),
+        subject="s1",
+        environment="room_a",
+        prompt_fn=lambda _: "",
+        clock=clock,
+    )
+
+    import json
+
+    segment = json.loads((session_dir / "labels.json").read_text())["segments"][0]
+    assert segment["start_ts"] < 1010.0
+
+
+def test_cli_forwards_lead_in(tmp_path, monkeypatch):
+    calls = _spy_on_run(monkeypatch)
+    session_script.main(
+        [
+            "--port", "/dev/fake1=rx1", "--script", "background:10",
+            "--subject", "s1", "--out", str(tmp_path), "--lead-in", "15",
+        ]
+    )
+    assert calls["lead_in_s"] == 15.0

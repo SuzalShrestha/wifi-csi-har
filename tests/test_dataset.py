@@ -5,13 +5,14 @@ import pandas as pd
 import pytest
 
 from csihar.dataset import (
-    LABEL_NAMES,
     HarDataset,
+    LABEL_NAMES,
     assemble_dataset,
     assemble_session,
     iter_cross_subject,
     load_dataset,
     save_dataset,
+    split_coverage_note,
     split_cross_environment,
     split_cross_session,
     split_cross_subject,
@@ -316,3 +317,39 @@ def test_splits_do_not_mutate_dataset(dataset):
     assert dataset.subjects.tolist() == before["subjects"].tolist()
     assert dataset.sessions.tolist() == before["sessions"].tolist()
     assert dataset.environments.tolist() == before["environments"].tolist()
+
+
+def _tiny_ds(y):
+    """Minimal HarDataset with the given class ids; X content is irrelevant."""
+    y = np.asarray(y, dtype=np.int64)
+    n = len(y)
+    return HarDataset(
+        X=np.zeros((n, 1, 4, 4), dtype=np.float32),
+        y=y,
+        subjects=np.array(["s1"] * n),
+        sessions=np.array(["sess"] * n),
+        environments=np.array(["room_a"] * n),
+    )
+
+
+def test_split_coverage_note_is_empty_for_a_sound_split():
+    ds = _tiny_ds([0, 0, 4, 4])
+    assert split_coverage_note(ds, np.array([0, 2]), np.array([1, 3])) == ""
+
+
+def test_split_coverage_note_flags_classes_missing_from_test():
+    # Holding out whole sessions can strip every window of several classes;
+    # the resulting accuracy is uninterpretable, not merely bad.
+    ds = _tiny_ds([0, 1, 2, 4, 0, 0])
+    note = split_coverage_note(ds, np.array([0, 1, 2, 3]), np.array([4, 5]))
+    assert note.startswith("DEGENERATE SPLIT")
+    assert "test missing 3 class(es)" in note
+    for name in ("standing", "sitting", "walking"):
+        assert name in note
+
+
+def test_split_coverage_note_flags_classes_missing_from_train():
+    ds = _tiny_ds([0, 0, 4, 4])
+    note = split_coverage_note(ds, np.array([0, 1]), np.array([2, 3]))
+    assert "train missing 1 class(es): walking" in note
+    assert "test missing 1 class(es): background" in note

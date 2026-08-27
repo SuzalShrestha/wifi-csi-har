@@ -12,10 +12,17 @@ Usage:
         --port /dev/cu.usbmodem103=rx3 \
         --script "background:10,walking:60,sitting:60" \
         --traffic 192.168.1.97 --traffic 192.168.1.98 --traffic 192.168.1.99 \
-        --subject sujal --env room_a --out datasets/raw
+        --lead-in 15 --subject sujal --env room_a --out datasets/raw
 
 ``--traffic`` is not optional against a real router: without sustained UDP
 downlink the boards emit <1 Hz of CSI and the whole session is worthless.
+
+``--lead-in`` delays the start of each segment's clock after the operator
+presses Enter. It exists so a lone subject can record ``background``: press
+Enter, walk out, and the labelled span begins only once the room is empty.
+Without it background has to be recorded as a separate session, and a model
+then learns that background is "the session recorded at 23:57" rather than
+"nobody is here" — measured 100% within-session, 49% across sessions.
 """
 
 from __future__ import annotations
@@ -139,6 +146,7 @@ def run_scripted_session(
     prompt_fn: Callable[[str], str] = input,
     clock: Callable[[], float] = time.time,
     traffic_ips: list[str] | None = None,
+    lead_in_s: float = 0.0,
 ) -> Path:
     """Record continuously while stepping the operator through `script`.
 
@@ -149,6 +157,10 @@ def run_scripted_session(
 
     ``traffic_ips`` must be supplied against a real router — see
     csihar/traffic.py for why CSI collapses to <1 Hz without it.
+
+    ``lead_in_s`` seconds elapse between the operator's Enter and the start of
+    the labelled span, so the subject can get into position (or leave the room
+    for a background segment) without contaminating the label.
     """
     session_name = f"{time.strftime('%Y%m%d_%H%M%S')}_{subject}_scripted"
     session_dir = out_dir / session_name
@@ -174,6 +186,10 @@ def run_scripted_session(
                     f"NEXT: {segment.label} for {segment.duration_s:.0f}s — "
                     "press Enter when subject is ready"
                 )
+                if lead_in_s > 0:
+                    _wait_segment(
+                        lead_in_s, f"get in position for {segment.label}", clock
+                    )
                 start_ts = clock()
                 _wait_segment(segment.duration_s, segment.label, clock)
                 end_ts = clock()
@@ -218,6 +234,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--env", default="room_a")
     ap.add_argument("--out", type=Path, default=Path("datasets/raw"))
     ap.add_argument("--notes", default="")
+    ap.add_argument(
+        "--lead-in", type=float, default=0.0, metavar="SECONDS",
+        help="delay between pressing Enter and the labelled span starting, so "
+        "the subject can get into position or leave the room (use ~15 for "
+        "background segments when recording alone)",
+    )
     add_traffic_argument(ap)
     args = ap.parse_args(argv)
 
@@ -244,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
 
     session_dir = run_scripted_session(
         ports, args.out, script, args.subject, args.env, args.notes,
-        traffic_ips=args.traffic,
+        traffic_ips=args.traffic, lead_in_s=args.lead_in,
     )
     print(f"\nsession saved: {session_dir}")
     return 0

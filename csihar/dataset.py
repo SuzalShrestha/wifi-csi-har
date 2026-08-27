@@ -268,6 +268,32 @@ def split_random(
     return train_idx, test_idx
 
 
+def split_coverage_note(
+    ds: HarDataset, train_idx: np.ndarray, test_idx: np.ndarray
+) -> str:
+    """Describe degenerate class coverage in a split, or "" if it is sound.
+
+    A test set missing classes the training set contains scores the model on a
+    different problem than it was fit for, and the resulting accuracy is
+    uninterpretable rather than bad. With few sessions this is easy to hit —
+    holding out whole sessions can remove every window of several classes —
+    and a bare number in the results CSV then reads as catastrophic failure.
+    """
+    train_classes = set(np.unique(ds.y[train_idx]).tolist())
+    test_classes = set(np.unique(ds.y[test_idx]).tolist())
+    missing_from_test = train_classes - test_classes
+    missing_from_train = test_classes - train_classes
+
+    parts = []
+    if missing_from_test:
+        names = ", ".join(sorted(ds.label_names[i] for i in missing_from_test))
+        parts.append(f"test missing {len(missing_from_test)} class(es): {names}")
+    if missing_from_train:
+        names = ", ".join(sorted(ds.label_names[i] for i in missing_from_train))
+        parts.append(f"train missing {len(missing_from_train)} class(es): {names}")
+    return "DEGENERATE SPLIT - " + "; ".join(parts) if parts else ""
+
+
 def split_cross_session(
     ds: HarDataset, test_fraction: float = 0.25, seed: int = 0
 ) -> tuple[np.ndarray, np.ndarray]:
