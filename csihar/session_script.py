@@ -120,7 +120,10 @@ def _wait_segment(duration_s: float, label: str, clock: Callable[[], float]) -> 
         remaining = duration_s - elapsed
         if remaining <= 0:
             break
-        if elapsed >= next_announce or remaining <= _COUNTDOWN_INTERVAL_S:
+        # Announce on a fixed schedule only. Also printing whenever `remaining`
+        # was inside one interval fired every poll (10x a second) for the last
+        # five seconds of every segment.
+        if elapsed >= next_announce:
             print(f"  {label}: {max(remaining, 0):.0f}s remaining", flush=True)
             next_announce += _COUNTDOWN_INTERVAL_S
         time.sleep(min(_POLL_INTERVAL_S, max(remaining, 0)))
