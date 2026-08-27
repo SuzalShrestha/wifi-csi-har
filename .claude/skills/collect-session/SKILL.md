@@ -25,6 +25,34 @@ Procedure for running one labeled data-collection session with rx1/rx2/rx3.
   the session is worthless.** This is the single most common way to waste a
   collection session.
 
+## 1b. Pre-flight check (do not skip)
+
+Ten seconds of capture, checked exactly the way post-session QA checks a
+recording. It writes nothing and exits non-zero if the rig is not ready.
+
+```bash
+.venv/bin/python -m csihar.preflight \
+  --port /dev/cu.usbmodem5B5E0807741=rx1 \
+  --port /dev/cu.usbmodem5C842982391=rx2 \
+  --port /dev/cu.usbmodem5C842990031=rx3 \
+  --traffic 192.168.1.97 --traffic 192.168.1.98 --traffic 192.168.1.99
+```
+
+```
+rx1:  100.4 Hz  rssi  -54.5  ch 6  gaps 0.000  parse_err 0  -> ok
+rx2:  100.5 Hz  rssi  -66.4  ch 6  gaps 0.000  parse_err 0  -> ok
+rx3:  100.3 Hz  rssi  -61.9  ch 6  gaps 0.000  parse_err 0  -> ok
+
+READY TO RECORD
+```
+
+It catches the three failure modes that have actually cost sessions:
+- a receiver on the wrong USB port or not joined (reported `NO FRAMES`),
+- a capture with no UDP downlink (rate reads ~0.2 Hz instead of 100 Hz),
+- receivers on different channels (their windows cannot be aligned).
+
+Only start the real recording once this prints `READY TO RECORD`.
+
 ## 2. Run the collector
 
 Two harnesses, depending on whether the recording covers one activity or

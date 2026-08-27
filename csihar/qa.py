@@ -127,8 +127,27 @@ def check_receiver(
     min_mcs_fraction: float = 0.9,
 ) -> ReceiverReport:
     """Load one receiver's Parquet file and compute its QA report. Pure/read-only."""
-    receiver_id = path.stem
-    df = pd.read_parquet(path)
+    return check_dataframe(
+        path.stem,
+        pd.read_parquet(path),
+        min_rate_hz,
+        max_gap_fraction,
+        min_mcs_fraction,
+    )
+
+
+def check_dataframe(
+    receiver_id: str,
+    df: pd.DataFrame,
+    min_rate_hz: float = 90.0,
+    max_gap_fraction: float = 0.05,
+    min_mcs_fraction: float = 0.9,
+) -> ReceiverReport:
+    """QA one receiver's frames in memory (no file needed).
+
+    Split out of ``check_receiver`` so pre-flight can run the identical
+    checks on a short live capture that is never written to disk.
+    """
     n_frames = len(df)
 
     if n_frames < 2:

@@ -23,6 +23,7 @@ measure real-time latency, then write the report chapters.
 .venv/bin/pip install -e ".[dev,ml,demo]"           # after dependency changes
 .venv/bin/python -m csihar.view --simulate walking  # pipeline demo, no hardware
 .venv/bin/python -m csihar.view --live <port>       # live heatmap from a board
+.venv/bin/python -m csihar.preflight --help         # verify the rig BEFORE recording
 .venv/bin/python -m csihar.collector --help         # record a session
 .venv/bin/python -m csihar.experiments --help       # Phase 4 ablations
 .venv/bin/python -m csihar.dashboard --help         # Phase 5 demo dashboard
@@ -40,6 +41,9 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
   esp-csi `csi_recv_router` (see below). Don't change without re-checking
   firmware source.
 - `csihar/collector.py` — threaded 3-receiver serial capture → Parquet.
+- `csihar/preflight.py` — 10 s live check before a session: every receiver
+  present, at rate, on one channel. Run it first; it is far cheaper than
+  discovering a dead board after a 25-minute recording.
 - `csihar/session_script.py` — guided multi-segment session: one continuous
   recording, `labels.json` sidecar of host-clock label ranges. Use this for
   pilot/full collection rather than one file per activity.
