@@ -33,8 +33,15 @@ make figures                                        # regenerate report figures
 make report                                         # build LaTeX report (needs TeX)
 ```
 
-Python 3.14 venv at `.venv/`. No GPU on this machine — heavy training happens
-on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
+Python 3.14 venv at `.venv/`. No CUDA GPU on this machine, but **Apple MPS
+works and is ~2.5x faster than CPU** (`--device auto` picks cuda > mps > cpu).
+Heavy training goes to Colab via `notebooks/train_colab.ipynb`; keep model
+code runnable on CPU for smoke tests.
+
+**Results are not reproducible across devices.** The same seed on CPU and MPS
+gave test accuracy 0.903 vs 0.929 on identical data. `device` is part of
+`TrainConfig` and is written into the results CSV's config column — pin it
+when reporting a number, and never compare rows trained on different devices.
 
 ## Repo map
 
@@ -137,6 +144,12 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
 3. Falling is safety-critical: always report its recall separately.
 4. Every experiment: fixed seed, config committed, results CSV under
    `experiments/`. Figures regenerate from scripts — no hand-made plots.
+   Seed alone does not pin a run: the device does too (see above).
+5. A split whose test set is missing classes the train set has is
+   **degenerate, not bad** — its accuracy is uninterpretable.
+   `dataset.split_coverage_note` detects this, `baseline` warns and writes
+   the reason into the results CSV. Cross-session needs activities in >= 2
+   sessions; cross-subject needs >= 2 subjects.
 
 ## Conventions
 

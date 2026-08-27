@@ -21,6 +21,7 @@ from csihar.train import (
     _grouped_val_split,
     norm_apply,
     norm_fit,
+    resolve_device,
     train_model,
 )
 
@@ -259,3 +260,43 @@ def test_train_model_rejects_unknown_names(sim_dataset):
         train_model(sim_dataset, TrainConfig(model="mlp", epochs=1))
     with pytest.raises(ValueError, match="unknown split"):
         train_model(sim_dataset, TrainConfig(split="temporal", epochs=1))
+
+
+def test_resolve_device_honours_an_explicit_name():
+    assert resolve_device("cpu") == torch.device("cpu")
+
+
+def test_resolve_device_auto_falls_back_to_cpu(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    assert resolve_device("auto") == torch.device("cpu")
+
+
+def test_resolve_device_auto_prefers_cuda(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert resolve_device("auto") == torch.device("cuda")
+
+
+def test_resolve_device_auto_uses_mps_when_no_cuda(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert resolve_device("auto") == torch.device("mps")
+
+
+def test_device_is_part_of_the_committed_config():
+    # Every knob of a run must be reproducible from the logged config.
+    assert "device" in TrainConfig().to_json()
+    assert TrainConfig.from_json(TrainConfig(device="cpu").to_json()).device == "cpu"
+
+
+def test_checkpoint_is_saved_on_cpu(sim_dataset, tmp_path):
+    """A GPU-trained checkpoint has to load on the laptop that runs the demo."""
+    cfg = TrainConfig(
+        epochs=1, batch_size=8, patience=8, device="cpu",
+        results_csv=str(tmp_path / "r.csv"),
+        checkpoints_dir=str(tmp_path / "ckpt"),
+        figures_dir=str(tmp_path / "fig"),
+    )
+    _, path = train_model(sim_dataset, cfg)
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    assert all(t.device.type == "cpu" for t in payload["state_dict"].values())
