@@ -169,15 +169,33 @@ def assemble_session(session_dir: Path, cfg: PreprocessConfig) -> SessionWindows
     )
 
 
+def is_excluded(session_dir: Path) -> bool:
+    """True if the session's metadata marks it as not-for-training.
+
+    Bring-up and rig-test captures sit in datasets/raw next to real sessions.
+    Relying on whoever runs training to remember which is which is how an
+    uncontrolled room ends up contributing windows to a reported result.
+    """
+    meta_path = session_dir / "metadata.json"
+    if not meta_path.exists():
+        return False
+    return bool(json.loads(meta_path.read_text()).get("exclude_from_dataset", False))
+
+
 def assemble_dataset(raw_dir: Path, cfg: PreprocessConfig) -> HarDataset:
     """Assemble every session dir under raw_dir (those with metadata.json).
 
-    Sessions yielding zero windows are skipped and reported in one warning.
+    Sessions marked ``exclude_from_dataset`` are left out. Sessions yielding
+    zero windows are skipped and reported in one warning.
     """
-    session_dirs = sorted(
+    all_dirs = sorted(
         d for d in raw_dir.iterdir()
         if d.is_dir() and (d / "metadata.json").exists()
     )
+    excluded = [d.name for d in all_dirs if is_excluded(d)]
+    session_dirs = [d for d in all_dirs if not is_excluded(d)]
+    if excluded:
+        warnings.warn(f"excluded from dataset by metadata: {excluded}")
     if not session_dirs:
         raise ValueError(f"no session dirs with metadata.json under {raw_dir}")
 

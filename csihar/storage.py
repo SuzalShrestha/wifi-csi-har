@@ -50,6 +50,7 @@ def write_session_metadata(
     environment: str,
     receivers: dict[str, str],
     notes: str = "",
+    exclude_from_dataset: bool = False,
 ) -> Path:
     session_dir.mkdir(parents=True, exist_ok=True)
     meta = {
@@ -59,6 +60,9 @@ def write_session_metadata(
         "environment": environment,
         "receivers": receivers,  # receiver_id -> serial port / position note
         "notes": notes,
+        # Bring-up and rig-test captures live alongside real sessions but must
+        # never reach training. A free-text note cannot enforce that; this can.
+        "exclude_from_dataset": exclude_from_dataset,
     }
     path = session_dir / "metadata.json"
     path.write_text(json.dumps(meta, indent=2))

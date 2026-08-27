@@ -25,6 +25,7 @@ measure real-time latency, then write the report chapters.
 .venv/bin/python -m csihar.view --live <port>       # live heatmap from a board
 .venv/bin/python -m csihar.preflight --help         # verify the rig BEFORE recording
 .venv/bin/python -m csihar.collector --help         # record a session
+.venv/bin/python -m csihar.datasheet datasets/raw    # collection progress vs M3 targets
 .venv/bin/python -m csihar.experiments --help       # Phase 4 ablations
 .venv/bin/python -m csihar.dashboard --help         # Phase 5 demo dashboard
 .venv/bin/python -m csihar.latency --help           # pipeline latency benchmark
@@ -54,7 +55,12 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
   normalize.
 - `csihar/simulate.py` — synthetic CSI in byte-exact firmware format; use it
   to develop/test anything downstream without hardware.
-- `csihar/storage.py` — Parquet + metadata.json session layout.
+- `csihar/storage.py` — Parquet + metadata.json session layout. Set
+  `exclude_from_dataset=True` on rig-test captures; `assemble_dataset` and
+  `datasheet` both honour it. A note in `notes` is not enough — nothing reads
+  it, and an uncontrolled-room capture reached a reported result that way.
+- `csihar/datasheet.py` — running collection report: seconds and estimated
+  windows per class/subject/session against the M3 targets.
 - `firmware/` — cloned espressif/esp-csi (git-ignored) + flash guide.
 - `csihar/latency.py` — per-stage latency benchmark (parse/ingest/window/
   inference) over a simulated or replayed session; runs against an untrained

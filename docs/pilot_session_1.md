@@ -16,6 +16,14 @@ Rejected: `20260827_230632_sujal_scripted` (moved to `datasets/rejected/`) —
 the subject walked during both the `background` and `walking` segments, so
 both labels describe the same activity.
 
+Excluded: `20260827_214816_bringup_background`. Its own notes said "room NOT
+controlled, do not use for training", but that was free text no code read, so
+`assemble_dataset` swept it in and it contributed ~18 background windows from
+an uncontrolled room to the first pass of this analysis. It now carries
+`exclude_from_dataset: true`, which `assemble_dataset` and `datasheet` both
+honour. Re-running without it gave **identical** numbers (0.717 overall,
+background 98/199), so nothing below depends on the contamination.
+
 ## Capture quality — all PASS
 
 100.36–100.46 Hz on every receiver, **0 sequence gaps, 0 parse errors**
@@ -85,6 +93,28 @@ cannot be misread later.
    time-order drift were doing the work, it cannot survive being flipped.
 3. Record on a **different day**, with the board layout unchanged.
 4. Until then, no accuracy number from this data belongs in the report.
+
+## Collection progress
+
+`python -m csihar.datasheet datasets/raw`:
+
+```
+class            seconds   minutes  ~windows
+background           601      10.0       399
+standing             300       5.0       199
+sitting              300       5.0       199
+lying                300       5.0       199
+walking              300       5.0       199
+falling                0       0.0         0   <- MISSING
+TOTAL               1801      30.0      1195
+
+  [--] subjects                    1 / 8
+  [--] windows                  1195 / 25000
+  [--] environments                1 / 2
+  [--] sujal distinct days         1 / 3
+```
+
+About 5% of the M3 window target, from one subject on one day.
 
 ## Still outstanding
 
