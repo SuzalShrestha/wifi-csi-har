@@ -33,6 +33,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from .dataset import (
     HarDataset,
     load_dataset,
+    label_coverage_note,
     split_coverage_note,
     split_cross_session,
     split_cross_subject,
@@ -398,6 +399,14 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
     coverage = split_coverage_note(ds, train_idx, test_idx)
     if coverage:
         warnings.warn(f"{coverage} - this run's metrics are uninterpretable")
+    # Separate severity: an unpopulated class does not invalidate the run, it
+    # lowers the best macro-F1 the run could possibly reach.
+    ceiling = label_coverage_note(ds)
+    if ceiling:
+        warnings.warn(
+            f"{ceiling} - macro-F1 is not comparable to runs where every "
+            "class has data"
+        )
 
     # Checkpoints must load on any machine — the realtime engine and the
     # dashboard run on the laptop's CPU, not wherever training happened.
@@ -420,7 +429,9 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
         report=report,
         n_train=len(train_idx),
         n_test=len(test_idx),
-        notes="; ".join(part for part in (cfg.notes, coverage) if part),
+        notes="; ".join(
+            part for part in (cfg.notes, coverage, ceiling) if part
+        ),
     )
     figure_path = Path(cfg.figures_dir) / (
         f"cm_{cfg.model}_{split_desc.replace(':', '_')}.png"

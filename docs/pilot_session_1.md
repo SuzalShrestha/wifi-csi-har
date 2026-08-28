@@ -218,3 +218,54 @@ About 5% of the M3 window target, from one subject on one day.
   where they were.
 - No `falling` data yet — needs a mattress and a spotter.
 - Second subject not yet recorded.
+
+---
+
+## Every pilot macro-F1 is measured against a 0.8333 ceiling — 2026-08-28
+
+Found while running the first ablation smoke test. `compute_metrics`
+averages F1 over the full label vocabulary (6 classes), and `falling` has
+zero windows. An absent class scores F1 = 0 with `zero_division=0`, and no
+model can avoid it.
+
+**A perfect classifier on this data scores macro-F1 0.8333.** Verified
+directly:
+
+```
+compute_metrics(y, y, names)  # identical predictions, 'falling' absent
+  accuracy  1.0
+  macro_f1  0.8333
+```
+
+Which changes how the existing pilot table reads:
+
+| model | split | accuracy | macro-F1 | % of ceiling |
+|---|---|---|---|---|
+| svm_rbf | random | 0.9917 | 0.8261 | **99.1%** |
+| random_forest | random | 0.9793 | 0.8143 | 97.7% |
+| cnn (Colab T4) | random | 0.9370 | 0.7717 | 92.6% |
+| cnn_lstm (Colab T4) | random | 0.9244 | 0.7616 | 91.4% |
+
+Two consequences.
+
+**1. No pilot macro-F1 is comparable to any later run.** Once `falling` is
+collected the ceiling moves to 1.0. A future 0.85 would look like an
+improvement over the baseline's 0.8261 while actually being worse relative
+to what is achievable.
+
+**2. The classical baselines beating the deep models is not (yet) evidence
+of a broken pipeline.** The project rule says a DL model that cannot beat
+SVM/RF signals a defect. That rule's diagnostic power applies on a
+non-leaky split with enough data. Here the split is maximally leaky
+(50%-overlapping windows from one subject on one day), and memorising a
+leaky split is precisely what an RBF-kernel SVM does best. Re-check the rule
+once cross-session is interpretable; do not act on it now.
+
+`dataset.label_coverage_note` now detects this, `train` and `baseline` warn
+and write it into the results CSV's `notes` column. Rows predating
+2026-08-28 do not carry the note — apply the ceiling by hand when reading
+them.
+
+Note that `split_coverage_note` never caught this and could not have: it
+compares the train class set against the test class set, and an unpopulated
+class is missing from both.

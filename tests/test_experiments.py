@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from csihar.dataset import HarDataset, assemble_dataset
+from csihar.figures import parse_notes
 from csihar.experiments import (
     AblationResult,
     crop_window,
@@ -357,11 +358,11 @@ def test_run_ablation_rate_smoke(sim_dataset, tmp_path):
     with open(results_csv, newline="") as fh:
         rows = list(csv.DictReader(fh))
     assert len(rows) == 3
-    assert {row["notes"] for row in rows} == {
-        "ablation=rate variant=100Hz",
-        "ablation=rate variant=50Hz",
-        "ablation=rate variant=25Hz",
-    }
+    # `train` may append coverage caveats to the run's own notes, so assert
+    # the contract -- the variant is recoverable -- not string equality.
+    parsed = [parse_notes(row["notes"]) for row in rows]
+    assert {p["ablation"] for p in parsed} == {"rate"}
+    assert {p["variant"] for p in parsed} == {"100Hz", "50Hz", "25Hz"}
     assert all(row["model"] == "cnn" and row["split"] == "random" for row in rows)
 
     # per-variant checkpoint dirs -> no filename collisions across variants
@@ -402,7 +403,10 @@ def test_run_ablation_cross_subject_loso_smoke(sim_dataset, tmp_path):
     assert {row["split"] for row in rows} == {
         "cross-subject:s1", "cross-subject:s2",
     }
-    assert all(row["notes"] == "ablation=receivers variant=rx0" for row in rows)
+    assert all(
+        parse_notes(row["notes"]) == {"ablation": "receivers", "variant": "rx0"}
+        for row in rows
+    )
     for subject in ("s1", "s2"):
         assert (
             tmp_path / "checkpoints" / "receivers" / "rx0"

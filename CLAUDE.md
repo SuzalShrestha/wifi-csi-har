@@ -180,7 +180,17 @@ compare rows trained on different devices.
    `baseline` and `train` now call `split_coverage_note` and write it into
    the CSV's `notes`; a cross-* row with an empty `notes` predates that fix.
    The checkpoint from such a run is still usable — only the metric is void.
-6. A split whose test set is missing classes the train set has is
+6. **An uncollected class caps macro-F1 below 1.0.** `compute_metrics`
+   averages F1 over the whole label vocabulary, so a class with no windows
+   anywhere scores F1 = 0 and no model can avoid it. With `falling`
+   uncollected, a *perfect* classifier on the pilot data scores macro-F1
+   **0.8333**, not 1.0 — SVM's 0.8261 is 99% of ceiling, not a mediocre
+   result, and no pilot macro-F1 is comparable to a later one where
+   `falling` exists. `dataset.label_coverage_note` detects this and both
+   `train` and `baseline` write it into the CSV's `notes`. This is *not*
+   what rule 5 catches: `split_coverage_note` compares train against test,
+   and an unpopulated class is missing from both.
+7. A split whose test set is missing classes the train set has is
    **degenerate, not bad** — its accuracy is uninterpretable.
    `dataset.split_coverage_note` detects this, `baseline` warns and writes
    the reason into the results CSV. Cross-session needs activities in >= 2
