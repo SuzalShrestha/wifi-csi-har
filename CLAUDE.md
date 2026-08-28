@@ -154,6 +154,13 @@ compare rows trained on different devices.
   build phase features into the main pipeline.
 - Receivers have independent clocks: align at **window level** via host
   timestamps, never per-packet.
+- **The results `notes` column carries both structured tokens and free text**,
+  joined with `"; "` — `train` appends the degenerate-split coverage warning
+  to whatever notes the caller set. `figures.parse_notes` therefore splits on
+  `;` as well as whitespace; splitting on whitespace alone left the semicolon
+  glued to the value (`variant=25Hz;`), which made `make figures` raise on
+  window/rate ablation rows and silently split the receivers series in two.
+  Anything else that parses `notes` must do the same.
 - NumPy 2.x: `np.fromstring` is gone (already hit this once).
 
 ## Non-negotiable evaluation rules (defense depends on these)
