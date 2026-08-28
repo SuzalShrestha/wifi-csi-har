@@ -2,15 +2,109 @@
 \label{ch:introduction}
 
 \section{Background}
-% Contactless sensing: why WiFi CSI over cameras (privacy, lighting,
-% occlusion) and wearables (compliance). CSI vs RSSI granularity.
-[TODO]
+
+Human activity recognition (HAR) is the task of inferring what a person is
+doing from sensor observations. It underpins assisted-living systems, fall
+detection for the elderly, patient monitoring, and smart-building
+automation. The dominant sensing modalities each carry a cost that limits
+where they can be deployed.
+
+\textbf{Cameras} give the richest signal but are unacceptable in bedrooms
+and bathrooms --- precisely the rooms where falls are most likely. They also
+fail in darkness and behind occlusions, and storing video of a private home
+creates a data-protection liability that a small deployment cannot
+discharge.
+
+\textbf{Wearables} (accelerometers, smartwatches, pendant alarms) sidestep
+the privacy problem but depend on compliance. The device must be worn,
+charged, and not removed --- and the population most in need of fall
+detection is the population least likely to satisfy all three, particularly
+at night and while bathing.
+
+\textbf{Ambient radio sensing} avoids both failure modes. A WiFi transmitter
+already present in the room illuminates the space continuously; a receiver
+observes how the human body perturbs the propagation of that signal. Nothing
+is worn, nothing is recorded that resembles an image, and the sensing works
+in darkness and through soft furnishings.
+
+\subsection{From RSSI to Channel State Information}
+
+The earliest WiFi sensing work used the \emph{Received Signal Strength
+Indicator} (RSSI), a single scalar per packet summarising total received
+power. RSSI is coarse: it collapses all propagation paths into one number,
+so two very different multipath configurations that happen to deliver the
+same total energy are indistinguishable. It is also unstable, because
+transmitter rate adaptation and automatic gain control move it for reasons
+unrelated to the environment.
+
+\emph{Channel State Information} (CSI) is the finer-grained alternative
+exposed by OFDM receivers. An 802.11n/ac receiver estimates the complex
+channel response $H_k$ on each of its OFDM subcarriers in order to equalise
+the received symbols; CSI is that per-subcarrier estimate made visible to
+software. Instead of one scalar, each packet yields a vector of complex
+values --- a sampled frequency response of the radio channel:
+%
+\begin{equation}
+  y_k = H_k x_k + n_k, \qquad k = 1 \dots K,
+\end{equation}
+%
+where $x_k$ and $y_k$ are the transmitted and received symbols on subcarrier
+$k$ and $n_k$ is noise. Because the subcarriers are spread across the
+channel bandwidth, and because multipath components with different delays
+produce different phase rotations across frequency, $\{H_k\}$ encodes the
+\emph{structure} of the propagation environment, not merely its total
+attenuation.
+
+A moving human body changes that structure. Limbs and torso reflect,
+scatter, and block propagation paths; the resulting time-varying multipath
+appears in the CSI amplitude series as motion-specific patterns, with
+Doppler content determined by limb velocity. Walking, sitting down, and
+falling perturb the channel in measurably different ways, which is what
+makes classification possible.
+
+The practical obstacle for a long time was access: CSI was only readable on
+a handful of specialised NICs (notably the Intel 5300 with a patched driver,
+and Atheros chipsets). The arrival of CSI APIs on low-cost microcontroller
+WiFi SoCs, including Espressif's ESP32 family, removed that barrier and put
+CSI sensing within reach of a student project budget.
 
 \section{Problem Statement}
-% Recognize 5 activities + background (walking, sitting, standing, lying,
-% falling) from commodity-hardware CSI, with falling as the safety-critical
-% class. Constraint: single-antenna ESP32-S3 receivers -> amplitude-only.
-[TODO]
+
+This project recognises five human activities --- \emph{walking},
+\emph{sitting}, \emph{standing}, \emph{lying}, and \emph{falling} --- plus a
+sixth \emph{background} class denoting an empty room, from the CSI amplitude
+observed by three ESP32-S3 receivers illuminated by a single commodity WiFi
+router.
+
+Three constraints shape every design decision that follows.
+
+\textbf{The hardware is single-antenna.} Each ESP32-S3 has one antenna and a
+consumer-grade crystal oscillator. The raw CSI phase is therefore corrupted
+by carrier frequency offset, sampling frequency offset, and packet detection
+delay, and the standard sanitisation trick --- taking phase differences
+across antennas on the same NIC, which cancels the common offset --- is
+unavailable. The pipeline is consequently \textbf{amplitude-only}. This is
+not a shortcut; it is the same choice made by essentially all credible
+published ESP32 CSI work.
+
+\textbf{Falling is safety-critical and asymmetric.} A missed fall is a
+qualitatively worse error than a false alarm, and falls are simultaneously
+the scarcest class to collect, since each sample requires a mattress and a
+spotter. Falling recall is therefore reported separately throughout this
+report rather than being absorbed into an overall accuracy figure, and the
+training loss is class-weighted.
+
+\textbf{Honest evaluation is harder than high accuracy.} The standard way to
+report CSI HAR results --- shuffling fixed-length windows randomly into
+train and test sets --- leaks information. Consecutive windows overlap in
+time and are drawn from the same activity bout, the same clothing, and the
+same instantaneous furniture geometry, so a random split places
+near-duplicate windows on both sides of the partition. The resulting
+accuracy, typically 95--99\%, measures memorisation as much as recognition,
+and collapses when the system meets a new person or a new day. This project
+therefore commits in advance to reporting three splits for every model, and
+treats the gap between them as a result in its own right rather than a
+defect to be hidden.
 
 \section{Objectives}
 \begin{itemize}
@@ -25,10 +119,58 @@
 \end{itemize}
 
 \section{Scope and Limitations}
-% Single person, line-of-sight-ish lab rooms, amplitude-only (single
-% antenna: raw phase is CFO/SFO-corrupted), 5+1 classes. Multi-person,
-% through-wall, and pose estimation are future work.
-[TODO]
+
+The following bounds are set deliberately, and are stated here so that the
+evaluation in Chapter~\ref{ch:results} is read against the right claim.
+
+\textbf{In scope.} A single person in the sensing area; indoor rooms of
+roughly domestic scale with the receivers and router in fixed, measured
+positions; the six classes listed above; amplitude features only;
+recognition on a host laptop fed by USB-serial from three receivers.
+
+\textbf{Explicitly out of scope for this version.}
+
+\begin{itemize}
+  \item \emph{Multiple simultaneous occupants.} With one person the channel
+        perturbation can be attributed to one source. With two, the
+        superposition is not separable by a classifier trained on
+        single-occupancy data, and the labelling problem itself becomes
+        ill-posed.
+  \item \emph{Through-wall operation.} Feasible on ESP32-class hardware
+        \cite{strohmayer2023wall}, but it multiplies the collection matrix
+        by another environmental factor that the available time does not
+        cover.
+  \item \emph{Pose or skeleton estimation.} A regression problem requiring
+        synchronised ground truth (motion capture or camera) that is not
+        available.
+  \item \emph{Phase-based features.} Excluded for the hardware reason given
+        in the problem statement.
+  \item \emph{Transition classes.} Sit-down, stand-up, and lie-down are
+        genuine activities but are excluded from the label set in this
+        version; windows straddling a labelled boundary are trimmed rather
+        than assigned to either neighbour.
+\end{itemize}
+
+\textbf{Known limitations of the result.} Recognition accuracy is
+environment-sensitive: a model trained in one room learns that room's
+multipath as much as the activity, so a cross-environment result is
+reported separately and is expected to be the weakest number in the report.
+The dataset is collected by a four-person team with recruited volunteers, so
+its subject diversity is bounded by what a student project can recruit; the
+cross-subject figure should be read as a lower bound established on a small
+subject pool, not as a population-level claim.
 
 \section{Report Organization}
-[TODO]
+
+Chapter~\ref{ch:literature} reviews WiFi sensing fundamentals, deep-learning
+approaches to CSI HAR, and prior work on ESP32-class hardware, and states
+the gap this project addresses. Chapter~\ref{ch:methodology} specifies the
+acquisition, preprocessing, modelling, and --- most importantly --- the
+evaluation protocol, which is the chapter's central methodological
+contribution. Chapter~\ref{ch:system} documents the concrete system: the
+hardware rig, the software architecture, the real-time inference path, the
+demonstration dashboard, and the quality-assurance measures that keep bad
+sessions out of the dataset. Chapter~\ref{ch:results} presents the dataset
+summary, the model comparison across all three splits, the ablation studies,
+the real-time measurements, and a failure analysis. Chapter~\ref{ch:conclusion}
+concludes and identifies future work.

@@ -2,14 +2,115 @@
 \label{ch:conclusion}
 
 \section{Conclusion}
+% Write after the final runs. State the headline numbers for all three
+% splits, the falling recall, whether the >=85% target was met on splits 1-2,
+% and what the cross-subject gap was. Do not quote a single-split number.
 [TODO]
 
 \section{Limitations}
-% Single person; amplitude-only (single-antenna phase unusable);
-% environment sensitivity; dataset size.
-[TODO]
+
+The following bound what the results in Chapter~\ref{ch:results} can be
+taken to mean. They are properties of the design and the collection
+conditions, and were known in advance rather than discovered afterwards.
+
+\textbf{Single occupancy.} The system assumes one person in the sensing
+area. With two or more, the channel perturbation is a superposition that a
+classifier trained on single-occupancy data cannot decompose, and the
+labelling problem itself becomes ambiguous.
+
+\textbf{Amplitude only.} Raw CSI phase on a single-antenna ESP32-S3 is
+corrupted by carrier and sampling frequency offsets, and the multi-antenna
+differencing that would cancel them is not available on this hardware.
+Phase-derived features --- including Doppler estimation, which is the most
+physically direct route to a speed signal --- are therefore inaccessible.
+
+\textbf{Environment sensitivity.} A model trained in one room learns that
+room's multipath structure alongside the activity. The cross-environment
+result quantifies this, and it is expected to be the weakest number in the
+report. Redeployment into a new room should be assumed to require new data
+until demonstrated otherwise.
+
+\textbf{Dataset scale and subject diversity.} The dataset is collected by a
+four-person team with recruited volunteers over the project's timeline. The
+cross-subject result is therefore a leave-one-out estimate over a small
+subject pool, whose variance across folds is itself substantial; it should
+be read as an honest lower bound rather than a population-level claim.
+
+\textbf{An uncontrolled radio environment.} The transmitter is an
+ISP-supplied router whose channel cannot be pinned, operating on a 2.4\,GHz
+channel shared with a neighbouring access point at near-equal power
+(Table~\ref{tab:channel-survey}). Sessions are screened for channel drift,
+but the contention and the uncontrolled multipath contributed by that
+neighbour's traffic are present in the data and cannot be removed from it.
+
+\textbf{Fixed geometry.} Receiver positions are measured, marked, and
+photographed, and the model is trained on one geometry. Moving a receiver
+invalidates the trained model in the same way that moving to a new room
+does.
+
+\textbf{Class boundary definition.} Transitions --- sitting down, standing
+up, lying down --- are excluded rather than modelled, and windows straddling
+a label boundary are discarded. A deployed system encounters transitions
+continuously, so the reported accuracy is measured on cleaner label
+conditions than continuous operation presents.
 
 \section{Future Work}
-% Multi-person, through-wall, on-device inference (int8 TFLite Micro on the
-% S3's 8 MB PSRAM), UDP wireless transport, domain adaptation.
-[TODO]
+
+\subsection{On-device inference}
+
+Running quantized inference on the ESP32-S3 itself would remove the host
+from the sensing loop entirely, turning each receiver into a self-contained
+sensor. A budget analysis was carried out and establishes three things.
+
+First, \textbf{weights are not the constraint}: the CNN quantizes to
+approximately 236\,KB in int8, against 16\,MB of flash.
+
+Second, \textbf{memory is constrained by the activation arena, not the
+model}. The peak live working set for a 3\,s window is approximately
+609\,KB, and it occurs entirely within the first convolutional block, whose
+feature map is still at full time-subcarrier resolution. This exceeds the
+S3's 512\,KB of internal SRAM and would have to be placed in the slower
+8\,MB PSRAM. Because the peak is localised to the front end, a stride-2
+first convolution would reduce both the arena and the arithmetic by roughly
+a factor of four, bringing the model within internal SRAM --- at an accuracy
+cost that would need to be measured and reported.
+
+Third, and decisively, \textbf{on-device inference is necessarily
+single-receiver}. A board holds only its own CSI; sharing between boards
+would reintroduce the network dependency the change exists to remove. The
+cost of the stretch goal is therefore not memory --- receivers are input
+channels, and the parameter count barely moves --- but the loss of the
+spatial diversity that motivated the three-receiver design. The
+receiver-count ablation measures exactly this, and it is the number on which
+the decision should turn.
+
+\subsection{Other directions}
+
+\textbf{Multi-person sensing} is the most requested extension and the
+hardest, requiring either source separation or a fundamentally different
+output formulation such as counting or coarse localisation.
+
+\textbf{Through-wall operation} is established as feasible on this hardware
+class \cite{strohmayer2023wall} and would extend coverage from one room to a
+small dwelling.
+
+\textbf{Domain adaptation} addresses the environment sensitivity above
+directly: fine-tuning on a short unlabelled or lightly labelled capture in a
+new room, rather than recollecting a full dataset, is what would make
+deployment practical.
+
+\textbf{Data augmentation} --- time warping, subcarrier dropout, amplitude
+jitter --- is the natural first response to a cross-subject gap, and was
+deliberately deferred until the size of that gap on real data was known, so
+that the augmentation could be chosen against the observed failure rather
+than assumed.
+
+\textbf{Wireless transport} (UDP from receiver to host, instead of USB)
+would remove the cabling that currently constrains receiver placement. The
+distribution shift this introduces --- the receivers' own transmissions
+become part of the channel --- would require a small adaptation set
+collected in that mode.
+
+\textbf{Releasing the dataset}, if the department permits, would make the
+multi-receiver ESP32-S3 corpus a citable artefact and address the scarcity
+of multi-receiver, multi-session CSI data in this hardware class.

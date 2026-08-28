@@ -2,29 +2,327 @@
 \label{ch:system}
 
 \section{Hardware Setup}
-% Room geometry, receiver placement diagram, router config (locked 20 MHz,
-% channel from survey), powered USB hub. Photo + diagram.
-[TODO]
+
+\subsection{Receivers}
+
+Three ESP32-S3-WROOM-1 N16R8 development boards (16\,MB flash, 8\,MB PSRAM)
+serve as receivers. Each runs the \texttt{esp\_csi} \texttt{csi\_recv\_router}
+example \cite{espcsi} with two modifications that are necessary rather than
+cosmetic, and which are kept as a patch file so they survive any re-clone of
+the upstream repository:
+
+\begin{enumerate}
+  \item \textbf{WiFi power save disabled} (\texttt{WIFI\_PS\_NONE}). With
+        power save active the station sleeps between beacons and misses the
+        downlink frames that generate CSI, producing an irregular and
+        substantially reduced rate.
+  \item \textbf{A custom console UART.} The default USB-JTAG console routes
+        CSI output to a USB endpoint that is not the one being read, and
+        does not permit the baud rate to be configured. Only in custom UART
+        mode can the console be set to 921600 baud.
+\end{enumerate}
+
+Receivers are identified by the serial number of their USB-UART bridge,
+which is stable across reboots and re-plugs, so a given physical board maps
+to the same logical identifier in every session without manual
+configuration. Serial port, IP address, MAC address, and measured RSSI for
+each board are recorded in the collection protocol document.
+
+\subsection{Receiver placement}
+
+The three receivers are positioned at different locations and heights around
+the sensing area, with tripod feet marked on the floor so the geometry is
+reproducible across sessions, and photographed before every session. The
+placement and the router position are recorded in each session's metadata.
+
+Geometry is treated as part of the experimental configuration rather than as
+an incidental detail, because a change in receiver position changes the
+multipath structure the model has learned; an unrecorded move between
+sessions would appear in the results as an unexplained cross-session drop.
+
+\begin{figure}[htbp]
+  \centering
+  \fbox{\parbox[c][0.30\textwidth][c]{0.85\textwidth}{\centering
+    \texttt{room\_layout}\\[0.5em]
+    Room plan: receiver positions and heights, router position,
+    sensing area, tripod floor markings.\\
+    To be inserted from the measured session layout.}}
+  \caption{Receiver and router placement in the primary collection room.}
+  \label{fig:layout}
+\end{figure}
+
+\subsection{Router configuration and the RF environment}
+
+The transmitter is an ISP-supplied consumer router operating on the 2.4\,GHz
+band at 20\,MHz bandwidth, WPA2-PSK. Two constraints of this unit are
+documented because they affect the data rather than merely the convenience
+of collecting it.
+
+First, \textbf{the channel cannot be pinned}. The unit runs automatic
+channel selection and its subscriber-level administration interface does not
+expose a manual override, so the operating channel is wherever auto-select
+has landed and a mid-session change cannot be excluded a priori. The
+mitigation is detection rather than prevention: session quality assurance
+checks every session for channel and bandwidth drift, and a session whose
+frames straddle two channels fails and is discarded rather than entering the
+dataset unnoticed.
+
+Second, the channel that auto-select chose is \textbf{congested}. A
+41-scan channel survey conducted at the collection site measured the
+strongest competing access point on each channel:
+
+\begin{table}[htbp]
+  \centering
+  \caption{Channel survey at the collection site (41 scans over
+  approximately 7 minutes). The project's own access point is excluded from
+  the interference figures --- it is signal, not noise.}
+  \label{tab:channel-survey}
+  \begin{tabular}{clp{0.45\textwidth}}
+    \toprule
+    Channel & Strongest other AP & Assessment \\
+    \midrule
+    1  & $-82$\,dBm & Usable fallback; furthest from microwave-oven emission \\
+    5  & $-73$ to $-78$\,dBm & Overlaps channel 6 \\
+    6  & $\mathbf{-45}$\,\textbf{dBm} & \textbf{In use} --- a neighbouring AP
+         only 4\,dB below our own \\
+    8  & $-93$\,dBm & Overlaps 6 and 11 \\
+    11 & $-89$\,dBm, frequently undetected & \textbf{Preferred} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Channel 6 places a neighbouring access point at $-45$\,dBm against the
+project's own $-41$\,dBm --- near-equal-power co-channel contention. That
+neighbour's traffic both consumes airtime and injects uncontrolled multipath
+variation into every recorded window. Channel 11 would improve the
+AP-interference floor by roughly 44\,dB.
+
+The recommended remedy is a dedicated access point: it need not provide
+internet connectivity, only transmit, and it resolves the channel pinning,
+band steering, and competing-client problems simultaneously. This is
+recorded as a known limitation of the collection environment and is
+revisited in the failure analysis.
 
 \section{Software Architecture}
-% csihar package: parser -> collector (threaded 3-port serial) -> storage
-% (Parquet + metadata.json) -> preprocessing (pure functions) -> dataset
-% assembly + splits -> training engine -> checkpoint contract.
-[TODO]
+
+The host software is a single Python package organised as a pipeline of
+small, independently testable modules. The design rule throughout is
+immutability: frozen dataclasses for configuration and records, pure
+functions returning new arrays, and no shared mutable state between stages.
+
+\begin{description}
+  \item[Parser] Converts one \texttt{CSI\_DATA} line into a frame record
+    (metadata plus a complex subcarrier vector). The byte layout is pinned
+    by tests, including the imaginary-before-real ordering, so an upstream
+    firmware change cannot silently alter the interpretation.
+
+  \item[Collector] Reads the three serial ports concurrently on separate
+    threads, timestamps each frame on arrival using the host clock, and
+    writes per-receiver Parquet files. Host timestamping at arrival is what
+    makes window-level alignment possible across three unsynchronised
+    device clocks.
+
+  \item[Traffic generator] Produces the sustained UDP downlink described in
+    Section~\ref{sec:csi-acquisition}. It is exposed as a shared context
+    manager used by every component that reads from live hardware, so that
+    the requirement cannot be forgotten in one entry point while being
+    honoured in others.
+
+  \item[Storage] Defines the session layout: per-receiver Parquet files, a
+    \texttt{metadata.json} sidecar, and a \texttt{labels.json} sidecar for
+    scripted sessions. Sessions carry an explicit exclusion flag for
+    rig-test captures, honoured by dataset assembly.
+
+  \item[Preprocessing] Pure functions implementing the chain of
+    Chapter~\ref{ch:methodology}, each unit-tested for correctness and for
+    non-mutation of its input.
+
+  \item[Dataset] Assembles sessions into tensors, applies labels with
+    boundary trimming, and provides the four split functions together with
+    the degenerate-coverage check.
+
+  \item[Training] Model construction, the training loop, evaluation, the
+    checkpoint contract, and the provenance record appended to the results
+    CSV.
+
+  \item[Realtime] Streaming inference (Section~\ref{sec:realtime}).
+
+  \item[Dashboard] The demonstration interface (Section~\ref{sec:dashboard}).
+
+  \item[Simulator] Generates synthetic CSI in the byte-exact firmware output
+    format. This is what allows the entire downstream pipeline to be
+    developed and regression-tested without hardware, and it is the reason
+    the software was complete and green before the boards were flashed.
+\end{description}
+
+\subsection{Session preflight}
+
+A ten-second live check is run immediately before every recording session,
+verifying that all three receivers are present, that each is at rate, and
+that all three are associated on the same channel. It exists because the
+alternative --- discovering a dead board after a 25-minute recording --- is
+expensive in a way that a ten-second check is not.
 
 \section{Real-Time Inference}
-% Streaming buffers per receiver; online window assembly mirrors the offline
-% pipeline exactly (same function order); majority vote over last 5
-% predictions with confidence-thresholded "unknown" state; 1.5 s hop.
-% End-to-end latency and detection delay: TODO measure.
-[TODO]
+\label{sec:realtime}
+
+\subsection{Streaming design}
+
+The live path maintains a ring buffer per receiver. On each tick, a 3\,s
+window ending at the current time is sliced from each buffer, the three
+windows are aligned and preprocessed through the \emph{same functions in the
+same order} as the offline pipeline, the model is evaluated, and a
+prediction is emitted. Ticks occur at the 1.5\,s hop.
+
+Reusing the identical preprocessing functions --- rather than a
+streaming-optimised reimplementation --- is a deliberate constraint. A
+train/deploy preprocessing mismatch is a defect class that produces a
+degraded live system while every offline test continues to pass, and it is
+correspondingly difficult to diagnose.
+
+\subsection{Measured latency}
+
+Per-stage latency was benchmarked with three receivers at a 3\,s window and
+1.5\,s hop, replaying a real capture. Against a hop budget of 1500\,ms, the
+95th-percentile compute time for a complete tick is approximately 23\,ms ---
+a margin of roughly 65$\times$. Within that, window construction (Hampel,
+detrend, resample) accounts for about 85\,\%; model inference is
+approximately 3\,ms; parsing and buffer ingest are approximately 0.02\,ms
+per frame.
+
+The engineering conclusion is that \textbf{end-to-end delay is structural,
+not computational}: it is dominated by the 3\,s of signal that must
+accumulate before a window exists at all. Optimising the code cannot
+meaningfully reduce it; only shortening the window can, at a cost in
+accuracy that the window-length ablation quantifies.
+
+\subsection{A known and accepted offline/online gap}
+
+The streaming engine scores several points below the offline pipeline on the
+same recorded windows, with approximately 96\,\% window-for-window agreement
+in predicted label. The cause is identified and is a genuine property of the
+problem rather than an implementation defect.
+
+The moving-mean detrend is a \textbf{centred} 101-tap kernel. Offline, every
+interior sample of a window is detrended using 0.5\,s of data on each side
+--- including 0.5\,s of data that lies in the sample's future. A live stream
+cannot supply that. The implementation already takes 0.5\,s of lead-in
+before each window so the leading edge is correct, but the trailing edge
+cannot be corrected without waiting. The discrepancy is negligible in the
+window interior and concentrated entirely in its final 0.5\,s.
+
+Closing the gap is possible --- delay each prediction by 0.5\,s, which the
+65$\times$ latency headroom easily affords --- but it trades additional
+detection delay for a few points of accuracy. It is recorded here as a
+deliberate design trade, and documented in the source, so that a future
+maintainer does not spend effort "fixing" the window slicing in the
+expectation of a large gain.
+
+\subsection{Temporal smoothing}
+
+Raw per-window predictions flicker: adjacent windows overlap by 50\,\% and a
+borderline window can flip the displayed label several times during a single
+continuous activity. A rolling majority vote over the last 5 predictions is
+therefore applied, with a confidence threshold of 0.6.
+
+The semantics of the threshold matter more than its value. A low-confidence
+window \textbf{abstains} --- it is removed from the vote --- rather than
+voting for a literal "unknown" label. The distinction is not academic: in
+the earlier implementation "unknown" competed as a candidate in the majority
+vote, so two unsure windows could out-vote three confident ones. That made
+the smoother strictly worse than no smoothing at all: identical flicker and
+several points lower accuracy. With abstention, "unknown" is displayed only
+when nothing in the recent history is confident, which is the intended
+meaning of the state.
+
+Two honest observations about smoothing are reported rather than elided.
+First, \textbf{smoothed accuracy is lower than raw accuracy}. Majority
+voting suppresses independent noise, but recognition errors here are
+temporally clustered --- a window the model gets wrong is usually adjacent
+to other windows it gets wrong --- so the vote propagates errors as readily
+as it corrects them. Second, the smoother's real contribution is
+\textbf{display stability}: it substantially reduces the number of label
+changes over a session, against a small number of genuine activity
+transitions. The smoother therefore earns its place in the user interface,
+not in the accuracy table, and the raw figure is the one quoted as the
+system's recognition performance.
+
+\subsection{Fall alert fast path}
+
+A fall is transient: it occupies one or two windows. A 5-window majority
+vote will therefore essentially never select \emph{falling}, which means
+that raising the alert from the smoothed label structurally suppresses the
+one output the system most needs to produce.
+
+The fall alert consequently \textbf{bypasses the smoother}. Any single raw
+window classified as \emph{falling} with confidence at or above the
+threshold raises the alert immediately and independently of the vote. This
+accepts a higher false-alarm rate on the safety-critical class in exchange
+for not systematically missing the event, which is the correct direction for
+the asymmetry of the two errors.
 
 \section{Demo Dashboard}
-% FastAPI + WebSocket; live per-receiver heatmaps, smoothed prediction,
-% confidence, latching fall-alert banner; fully offline page.
-[TODO]
+\label{sec:dashboard}
+
+The demonstration interface is a FastAPI application serving a single page
+over a WebSocket connection. It displays live per-receiver CSI amplitude
+heatmaps, the current raw and smoothed predictions with confidence, and a
+latching fall-alert banner.
+
+The page is \textbf{fully self-contained} --- no external stylesheets,
+scripts, or fonts. This is a defence-day requirement rather than a
+preference: the venue's network cannot be relied upon, and a dashboard that
+fetches a resource from a CDN fails in exactly the circumstances where it
+must work. Both the raw and smoothed labels are streamed, so the difference
+discussed above is visible during the demonstration rather than hidden by
+it.
 
 \section{Quality Assurance}
-% Session QA gates (rate, loss, gaps), 150+ unit tests, simulator for
-% hardware-free development.
-[TODO]
+
+\subsection{Session gates}
+
+Every recorded session is checked before it is admitted to the dataset. A
+receiver's capture fails if its mean rate falls below 90\,Hz, if its
+sequence-number gap fraction exceeds 5\,\%, if the dominant modulation rate
+is not sufficiently stable, if the channel or bandwidth drifts within the
+session, or if the empirically detected null subcarriers do not match the
+expected DC-and-guard-band set --- the last being a strong indicator that
+something upstream is wrong with the parse or the radio configuration.
+
+The check is run immediately after recording, so a bad session is discovered
+the same day, while the room, the subject, and the operator are still
+available to repeat it.
+
+\subsection{Automated tests}
+
+The package carries 247 automated tests. Their coverage is deliberately
+weighted toward the properties that fail silently rather than loudly:
+
+\begin{itemize}
+  \item The parser's byte layout, including the imaginary-before-real
+        ordering, pinned against captured firmware output.
+  \item Non-mutation of inputs by every preprocessing function.
+  \item That every live entry point drives the UDP traffic generator ---
+        three components once shipped without it, and each would have
+        recorded a silently worthless session.
+  \item That the training path warns on degenerate splits and records the
+        reason.
+  \item That the results record stores the resolved compute device rather
+        than the requested one.
+  \item That low-confidence predictions abstain from the smoothing vote
+        rather than voting.
+\end{itemize}
+
+Where a test guards a specific past defect, it was verified by mutation ---
+reintroducing the defect and confirming that the test fails --- because a
+regression test that passes under the bug it was written to catch provides
+false assurance.
+
+\subsection{Hardware-free development}
+
+The simulator generates synthetic CSI in the exact byte format the firmware
+emits, which allows every stage downstream of the serial port to be
+developed and tested without boards. The practical consequence is that
+hardware time --- the genuinely scarce resource, since it requires the room,
+the rig, and the subjects simultaneously --- is spent on collecting data
+rather than on debugging software.
