@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from csihar.dataset import HarDataset, assemble_dataset
+from csihar.figures import parse_notes
 from csihar.experiments import (
     AblationResult,
     crop_window,
@@ -243,11 +244,60 @@ def test_resolve_settings_config_file_with_cli_overrides(tmp_path):
     assert settings["results_csv"] == "experiments/results/ablation_rate.csv"
 
 
+def test_resolve_settings_device_defaults_and_overrides(tmp_path):
+    """The ablation runner must be able to pin a device.
+
+    Results are not comparable across devices (same seed and data gave 0.903
+    on CPU, 0.929 on MPS, 0.937 on a T4), so an ablation grid whose rows
+    were produced on different devices is not an ablation. The runner had no
+    --device flag at all and always ran whatever "auto" resolved to.
+    """
+    from csihar.experiments import _build_arg_parser
+
+    parse = _build_arg_parser().parse_args
+    base = ["--data", "ds.npz", "--ablation", "rate"]
+
+    assert resolve_settings(parse(base))["device"] == TrainConfig.device
+
+    config = {"ablation": "rate", "data": "ds.npz", "device": "cpu"}
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps(config))
+    assert resolve_settings(parse(["--config", str(path)]))["device"] == "cpu"
+    # CLI wins over the config file, as for every other setting.
+    settings = resolve_settings(parse(["--config", str(path), "--device", "mps"]))
+    assert settings["device"] == "mps"
+
+
+def test_run_ablation_passes_device_into_every_train_config(monkeypatch):
+    """A device chosen on the command line must reach TrainConfig, not stop
+    at the settings dict."""
+    import csihar.experiments as experiments_module
+
+    seen: list[str] = []
+
+    def fake_train_model(ds, cfg):
+        seen.append(cfg.device)
+        raise _StopAblation
+
+    monkeypatch.setattr(experiments_module, "train_model", fake_train_model)
+    ds = make_ds(n=6)
+    with pytest.raises(_StopAblation):
+        run_ablation(
+            ds, ablation="rate", model="cnn", split="random",
+            seeds=(0,), epochs=1, device="cpu",
+        )
+    assert seen == ["cpu"]
+
+
+class _StopAblation(Exception):
+    """Abort run_ablation after the first TrainConfig is built."""
+
+
 def test_resolve_settings_requires_data_and_ablation():
     ns = argparse.Namespace(
         config=None, data=None, ablation="rate", model=None, split=None,
         seeds=None, epochs=None, results_csv=None, checkpoints_dir=None,
-        figures_dir=None, variants=None,
+        figures_dir=None, variants=None, device=None,
     )
     with pytest.raises(ValueError, match="--data"):
         resolve_settings(ns)
@@ -308,11 +358,11 @@ def test_run_ablation_rate_smoke(sim_dataset, tmp_path):
     with open(results_csv, newline="") as fh:
         rows = list(csv.DictReader(fh))
     assert len(rows) == 3
-    assert {row["notes"] for row in rows} == {
-        "ablation=rate variant=100Hz",
-        "ablation=rate variant=50Hz",
-        "ablation=rate variant=25Hz",
-    }
+    # `train` may append coverage caveats to the run's own notes, so assert
+    # the contract -- the variant is recoverable -- not string equality.
+    parsed = [parse_notes(row["notes"]) for row in rows]
+    assert {p["ablation"] for p in parsed} == {"rate"}
+    assert {p["variant"] for p in parsed} == {"100Hz", "50Hz", "25Hz"}
     assert all(row["model"] == "cnn" and row["split"] == "random" for row in rows)
 
     # per-variant checkpoint dirs -> no filename collisions across variants
@@ -353,7 +403,10 @@ def test_run_ablation_cross_subject_loso_smoke(sim_dataset, tmp_path):
     assert {row["split"] for row in rows} == {
         "cross-subject:s1", "cross-subject:s2",
     }
-    assert all(row["notes"] == "ablation=receivers variant=rx0" for row in rows)
+    assert all(
+        parse_notes(row["notes"]) == {"ablation": "receivers", "variant": "rx0"}
+        for row in rows
+    )
     for subject in ("s1", "s2"):
         assert (
             tmp_path / "checkpoints" / "receivers" / "rx0"

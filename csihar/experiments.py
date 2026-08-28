@@ -217,6 +217,7 @@ def run_ablation(
     checkpoints_dir: str | Path = DEFAULT_CHECKPOINTS_DIR,
     figures_dir: str | Path = DEFAULT_FIGURES_DIR,
     variants: tuple[str, ...] | None = None,
+    device: str = TrainConfig.device,
 ) -> list[AblationResult]:
     """Train every variant x seed of one ablation; return per-run reports.
 
@@ -228,6 +229,11 @@ def run_ablation(
 
     ``variants`` optionally restricts runs to the named variants (useful for
     smoke tests); unknown names raise before any training starts.
+
+    ``device`` is forwarded to every ``TrainConfig``. Pin it for any grid you
+    intend to report: accuracy is not reproducible across devices, so rows
+    produced on different devices are not comparable to each other and the
+    ablation's x-axis stops meaning anything.
     """
     if ablation not in ABLATION_NAMES:
         raise ValueError(
@@ -270,6 +276,7 @@ def run_ablation(
                 results_csv=str(csv_path),
                 checkpoints_dir=str(Path(checkpoints_dir) / abl / name),
                 figures_dir=str(Path(figures_dir) / abl / name),
+                device=device,
                 notes=f"ablation={abl} variant={name}",
             )
             if split == "cross-subject":
@@ -312,7 +319,8 @@ def format_summary(results: list[AblationResult]) -> str:
 
 _CONFIG_KEYS = frozenset(
     {"data", "ablation", "model", "split", "splits", "seeds", "epochs",
-     "results_csv", "checkpoints_dir", "figures_dir", "variants"}
+     "results_csv", "checkpoints_dir", "figures_dir", "variants",
+     "device"}
 )
 
 
@@ -357,6 +365,7 @@ def resolve_settings(args: argparse.Namespace) -> dict:
             tuple(args.variants) if args.variants
             else (tuple(cfg["variants"]) if cfg.get("variants") else None)
         ),
+        "device": args.device or cfg.get("device") or TrainConfig.device,
     }
     if not settings["data"]:
         raise ValueError("--data (or 'data' in --config) is required")
@@ -402,6 +411,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--figures-dir", default=None)
     parser.add_argument("--variants", nargs="+", default=None,
                         help="restrict to these variant names (e.g. rx0 50Hz)")
+    parser.add_argument("--device", default=None,
+                        help="auto (default) / cpu / cuda / mps. Pin it when "
+                             "the run is going to be reported: the same seed "
+                             "gives different accuracy on different devices.")
     return parser
 
 
@@ -422,6 +435,7 @@ def main(argv: list[str] | None = None) -> None:
                 checkpoints_dir=settings["checkpoints_dir"],
                 figures_dir=settings["figures_dir"],
                 variants=settings["variants"],
+                device=settings["device"],
             )
         )
     print()

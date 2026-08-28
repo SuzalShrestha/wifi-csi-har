@@ -27,11 +27,28 @@ Never paste hand-made or screenshot plots (repo rule; see CLAUDE.md).
 Confusion matrices are written per training run by `csihar.train` /
 `csihar.experiments`.
 
-## Writing order (from IMPLEMENTATION_PLAN.md)
+## Status (2026-08-28)
 
-Methodology and system-design chapters can be written NOW — the software is
-done and doesn't change with data. Results/failure-analysis chapters wait for
-real-data runs. Abstract last.
+| Chapter | State |
+|---|---|
+| 1 Introduction | written |
+| 2 Literature Review | written |
+| 3 Methodology | written |
+| 4 System Design | written |
+| 5 Results | skeleton — needs real-data runs |
+| 6 Conclusion | Limitations + Future Work written; Conclusion needs results |
+| Abstract | last |
+
+Chapters 1–4 are data-independent: they describe the system and the
+protocol, both of which are frozen. Every measured number in them
+(acquisition rate, null subcarriers, latency, channel survey) comes from a
+real capture and is sourced in CLAUDE.md's hard-won facts. Two blanks remain
+that only hardware can fill: the receiver-layout figure (§4.1) and the
+system-architecture diagram (§3.1), both currently placeholder boxes.
+
+Do not write the Results chapter from pilot data. One subject on one day
+cannot produce an interpretable cross-session or cross-subject number, which
+is the whole point of the evaluation protocol Chapter 3 commits to.
 
 ## Citations
 

@@ -56,6 +56,30 @@ def test_parse_notes_empty_and_nan():
     assert parse_notes(float("nan")) == {}  # pandas NaN cell
 
 
+def test_parse_notes_survives_an_appended_coverage_note():
+    """`train` joins run notes with a degenerate-split warning using "; ".
+
+    Splitting on whitespace alone left the semicolon glued to the value
+    ("25Hz;"), which made `variant_value` raise on window/rate rows -- i.e.
+    `make figures` crashed on exactly the runs the coverage guard flags.
+    """
+    notes = (
+        "ablation=rate variant=25Hz; DEGENERATE SPLIT - test missing "
+        "4 class(es): lying, sitting, standing, walking"
+    )
+    parsed = parse_notes(notes)
+    assert parsed == {"ablation": "rate", "variant": "25Hz"}
+    assert variant_value(parsed["ablation"], parsed["variant"]) == 25.0
+
+
+def test_parse_notes_coverage_note_does_not_split_a_series():
+    """The receivers ablation did not raise -- it silently produced a second
+    series ("rx0" and "rx0;") for one variant, which is worse than a crash."""
+    clean = parse_notes("ablation=receivers variant=rx0")
+    flagged = parse_notes("ablation=receivers variant=rx0; DEGENERATE SPLIT - x")
+    assert clean == flagged
+
+
 def test_variant_value_receivers():
     assert variant_value("receivers", "rx0") == 1.0
     assert variant_value("receivers", "rx0+rx1+rx2") == 3.0

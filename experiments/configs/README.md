@@ -23,6 +23,13 @@ The dataset path is deliberately NOT in the configs — it is machine-specific.
 Any CLI flag overrides the corresponding config value (e.g. `--epochs 2
 --seeds 0 --variants rx0 50Hz` for a quick smoke run).
 
+`--device` (or `"device"` in a config) pins the compute device. **Pin it for
+any grid you intend to report.** Accuracy is not reproducible across devices
+— the same seed and data gave 0.903 on CPU, 0.929 on MPS, 0.937 on a Colab
+T4 — so a grid whose rows ran on different devices is not an ablation. The
+resolved device is written into each row's config column; check it before
+plotting.
+
 Each run appends a provenance row (git SHA, seed, full TrainConfig JSON,
 variant in the `notes` column) to `experiments/results/ablation_<name>.csv`;
 checkpoints and confusion-matrix figures go to per-variant subdirectories

@@ -312,6 +312,37 @@ def split_coverage_note(
     return "DEGENERATE SPLIT - " + "; ".join(parts) if parts else ""
 
 
+def label_coverage_note(ds: "HarDataset") -> str:
+    """Warn when a class in the label vocabulary has no windows at all.
+
+    ``compute_metrics`` averages F1 over the full label vocabulary, which is
+    what makes rows comparable across splits and what makes the degenerate-
+    split signature (macro-F1 near 1/n_classes) detectable. The cost is that
+    a class present in ``label_names`` but absent from the data scores F1 = 0
+    and drags the average down by 1/n_classes with no way for a model to
+    avoid it.
+
+    On the pilot data -- 6 classes, ``falling`` not yet collected -- a
+    PERFECT classifier scores macro-F1 0.8333. Read without this note, SVM's
+    0.8261 looks like a mediocre result rather than 99% of the achievable
+    ceiling, and any later run in which ``falling`` exists is comparing
+    against a different ceiling entirely.
+
+    Returns "" when every class has data.
+    """
+    n_classes = len(ds.label_names)
+    present = set(np.unique(ds.y).tolist())
+    empty = [i for i in range(n_classes) if i not in present]
+    if not empty:
+        return ""
+    ceiling = (n_classes - len(empty)) / n_classes
+    names = ", ".join(sorted(ds.label_names[i] for i in empty))
+    return (
+        f"MACRO-F1 CAPPED AT {ceiling:.4f} - "
+        f"{len(empty)} class(es) with no windows: {names}"
+    )
+
+
 def split_cross_session(
     ds: HarDataset, test_fraction: float = 0.25, seed: int = 0
 ) -> tuple[np.ndarray, np.ndarray]:

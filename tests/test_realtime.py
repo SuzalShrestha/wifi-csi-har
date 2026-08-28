@@ -24,7 +24,14 @@ def test_smooth_predictions_empty_history_is_unknown():
     assert smooth_predictions((), SmootherConfig()) == "unknown"
 
 
-def test_smooth_predictions_low_confidence_counts_as_unknown():
+def test_smooth_predictions_low_confidence_abstains_rather_than_voting():
+    """Uncertain windows must not outvote confident ones.
+
+    They used to vote for the literal label "unknown", so the 3 unsure
+    entries below beat the 2 confident ones. On the pilot session that made
+    10% of outputs "unknown" and left the smoother strictly worse than no
+    smoothing: same 29 label changes as raw, accuracy 0.856 vs 0.918.
+    """
     cfg = SmootherConfig(vote_k=5, min_confidence=0.6)
     history = (
         ("walking", 0.5),
@@ -33,9 +40,25 @@ def test_smooth_predictions_low_confidence_counts_as_unknown():
         ("sitting", 0.9),
         ("sitting", 0.8),
     )
-    # 3 low-confidence "walking" entries -> "unknown"; 2 "sitting" pass.
-    # unknown(3) beats sitting(2).
+    assert smooth_predictions(history, cfg) == "sitting"
+
+
+def test_smooth_predictions_unknown_only_when_nothing_is_confident():
+    """Abstention still has to survive: a fully unsure window says so."""
+    cfg = SmootherConfig(vote_k=3, min_confidence=0.6)
+    history = (("walking", 0.5), ("sitting", 0.55), ("lying", 0.4))
     assert smooth_predictions(history, cfg) == "unknown"
+
+
+def test_smooth_predictions_tie_break_skips_abstaining_entries():
+    """The tie-break walks confident entries only, not raw recency.
+
+    All three labels below appear once. The most recent entry is unsure, so
+    it must be skipped entirely rather than winning the tie as "unknown".
+    """
+    cfg = SmootherConfig(vote_k=3, min_confidence=0.6)
+    history = (("walking", 0.9), ("sitting", 0.9), ("lying", 0.2))
+    assert smooth_predictions(history, cfg) == "sitting"
 
 
 def test_smooth_predictions_majority_wins():
@@ -159,10 +182,43 @@ def test_fall_alert_fires_on_confident_raw_fall_and_history_is_bounded(monkeypat
     # "walking") but must still raise the safety-critical alert.
     assert p3.smoothed_label == "walking"
     assert p3.fall_alert is True
-    # Low-confidence fall: no alert.
-    assert p4.fall_alert is False
+    # p4's own window is an unconfident fall, so the raw fast path does NOT
+    # fire. But tick 3's confident fall is still inside the 3-vote window, so
+    # the smoothed label stays "falling" and the alert persists. That is the
+    # behaviour we want from a safety-critical signal: an alert that cleared
+    # one window after a confident fall would be worse than one that holds.
+    assert p4.smoothed_label == "falling"
+    assert p4.fall_alert is True
     # History is pruned to vote_k, so long demos don't grow memory unbounded.
     assert len(engine._history) == 3
+
+
+def test_no_fall_alert_when_the_only_fall_evidence_is_unconfident(monkeypatch):
+    """The raw fast path must not fire on a low-confidence fall by itself."""
+    import csihar.realtime as rt
+
+    cfg = PreprocessConfig()
+    buffers, _ = _feed_session_into_buffers("walking", duration_s=5.0)
+    script = iter([("walking", 0.9), ("walking", 0.9), ("falling", 0.3)])
+
+    def fake_predict(bundle, window):
+        label, conf = next(script)
+        dist = np.full((1, 6), (1.0 - conf) / 5.0, dtype=np.float32)
+        dist[0, 0] = conf
+        return [label], dist
+
+    monkeypatch.setattr(rt, "predict", fake_predict)
+    engine = RealtimeEngine(
+        bundle=None, pre_cfg=cfg,
+        smoother=SmootherConfig(vote_k=3, min_confidence=0.6),
+    )
+    engine._buffers = buffers
+    engine.tick(4.0)
+    engine.tick(4.0)
+    p3 = engine.tick(4.0)
+    assert p3.raw_label == "falling"
+    assert p3.smoothed_label == "walking"   # the unsure fall abstains
+    assert p3.fall_alert is False
 
 
 # ---------------------------------------------------------- engine e2e smoke
@@ -202,9 +258,11 @@ def _stream_session_and_collect_smoothed(
 ) -> list[str]:
     # The smoke checkpoint is a tiny, few-epoch model: its argmax is accurate
     # (trivially separable simulated data) but softmax stays under-confident
-    # (~0.2 on a 6-way head). Use a low min_confidence here so the vote
-    # exercises real label agreement instead of being swamped by "unknown" —
-    # SmootherConfig's default (0.6) is tuned for a properly-trained model.
+    # (~0.2 on a 6-way head). At the default 0.6 threshold no window would
+    # clear the bar, so every entry would abstain and the smoother would
+    # correctly-but-uselessly answer "unknown" throughout. Lower it here so
+    # the vote exercises real label agreement; 0.6 is tuned for a properly
+    # trained model.
     smoother = SmootherConfig(vote_k=5, min_confidence=0.1)
     engine = RealtimeEngine(bundle, PreprocessConfig(), smoother)
     source = replay_source(session_dir, sleep_fn=lambda _: None)
