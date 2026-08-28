@@ -128,6 +128,27 @@ compare rows trained on different devices.
   ~85% of that; inference is ~3 ms; parse and ingest are ~0.02 ms per frame.
   End-to-end delay is dominated by the 3 s of buffering a window needs. To cut
   latency, shorten `window_s` — optimizing code will not move it.
+- **The streaming engine scores ~5 points below the offline pipeline on the
+  same windows, and that gap is structural.** Measured 2026-08-28 replaying
+  `20260827_232655_sujal_scripted`: offline 0.9177, realtime raw 0.8671, 96%
+  window-for-window prediction agreement. Cause: `detrend_moving_mean` is a
+  **centered** 101-tap kernel, so offline every interior sample sees 0.5 s of
+  *future* data. `_slice_window` grabs 0.5 s of lead-in but cannot grab
+  trailing context — that is the future. Error is ~0.0001 mid-window and
+  0.91 in the last 0.5 s. Closing it would cost 0.5 s of added latency; we
+  have the headroom, but it buys ~5 points, so it is a deliberate trade, not
+  a bug. Do not "fix" `_slice_window` expecting a large win.
+- **Smoothed accuracy is LOWER than raw — report raw.** End-to-end 0.8025
+  smoothed vs 0.8671 raw. Majority voting helps only against independent
+  noise; these errors cluster. The smoother earns its place on display
+  stability (29 label changes -> 19 over 20 min, against 3 real ones), not
+  accuracy. The dashboard streams both labels; quote the raw number.
+- **A confidence threshold must abstain, not vote.** `smooth_predictions`
+  used to map low-confidence windows to the literal label `"unknown"`, which
+  then competed in the majority vote — two unsure windows could veto three
+  confident ones. That made the smoother strictly dominated: identical
+  flicker to raw and 6 points worse. Low-confidence entries now drop out of
+  the vote; `"unknown"` is returned only when nothing recent is confident.
 - **Amplitude only.** Single antenna → raw phase is CFO/SFO-corrupted;
   multi-antenna phase sanitization is impossible on this hardware. Don't
   build phase features into the main pipeline.

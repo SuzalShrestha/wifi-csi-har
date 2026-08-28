@@ -53,16 +53,22 @@ def smooth_predictions(
 ) -> str:
     """Majority label over the last ``vote_k`` (raw_label, confidence) pairs.
 
-    Entries with confidence below ``cfg.min_confidence`` count as "unknown".
+    Entries below ``cfg.min_confidence`` ABSTAIN: they are dropped from the
+    vote rather than voting for "unknown". Letting them vote as a label meant
+    two uncertain windows could veto three confident ones, and measured on the
+    pilot session that made the smoother strictly worse than no smoothing at
+    all - same 29 label changes as the raw stream, but accuracy 0.856 vs
+    0.918, with 10% of outputs "unknown". Abstaining gives 0.905 and 19
+    changes. Only when NO recent entry is confident does this say "unknown".
+
     Ties break toward the most recent tied label. Empty history -> "unknown".
     """
     if not history:
         return "unknown"
     recent = history[-cfg.vote_k :]
-    votes = [
-        label if conf >= cfg.min_confidence else "unknown"
-        for label, conf in recent
-    ]
+    votes = [label for label, conf in recent if conf >= cfg.min_confidence]
+    if not votes:
+        return "unknown"
     counts = Counter(votes)
     best_count = max(counts.values())
     tied = {label for label, c in counts.items() if c == best_count}

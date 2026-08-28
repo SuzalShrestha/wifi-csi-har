@@ -133,6 +133,52 @@ Session 2 has to contain all five activities for the split to mean anything.
 with no `.git`. Clone the repo into Drive instead of copying it if that column
 needs to be meaningful.
 
+## Realtime engine vs offline pipeline — 2026-08-28
+
+An earlier note in this session claimed the streaming engine scored 0.567 on
+a session the CNN was trained on, against 0.903 offline. **That figure was
+wrong** — it mislabelled the predictions. Measured properly, replaying
+`20260827_232655_sujal_scripted` through `RealtimeEngine` and scoring with
+the same boundary rule `assemble_session` uses:
+
+| path | accuracy | windows |
+|---|---|---|
+| offline (`assemble_session`) | 0.9177 | 790 |
+| realtime, raw label | 0.8671 | 790 scoreable of 817 emitted |
+| realtime, smoothed label (before fix) | 0.7127 | " |
+| realtime, smoothed label (after fix) | 0.8025 | " |
+
+### The 5-point raw gap is causality, not a bug
+
+Window-for-window the two paths agree on 96% of predictions. The residual
+comes from `detrend_moving_mean` being a **centered** 101-tap kernel: offline,
+every interior sample sees 0.5 s of future data; in the stream that future
+has not happened. Mean absolute difference is 0.0001 mid-window and 0.91 in
+the last 0.5 s. `_slice_window` already takes 0.5 s of *lead-in*, which is
+why the leading edge is clean — only the trailing half is unfixable without
+delaying every prediction by 0.5 s. Worth knowing, not worth paying for.
+
+### The smoother was strictly worse than no smoothing
+
+`smooth_predictions` mapped any window below `min_confidence` to the literal
+label `"unknown"`, which then **competed in the majority vote**. Two unsure
+windows could veto three confident ones. Measured over the pilot session:
+
+| | accuracy | label changes / 20 min | says "unknown" |
+|---|---|---|---|
+| raw | 0.9177 | 29 | 0% |
+| smoothed, old | 0.8557 | **29** | 10.1% |
+| smoothed, abstaining | 0.9051 | **19** | 2.8% |
+
+Identical flicker to raw and 6 points worse — it bought nothing. Low
+confidence now abstains: the entry drops out of the vote, and `"unknown"` is
+returned only when nothing recent is confident. Ground truth changes label 3
+times in those 20 minutes, so 19 is still far from clean.
+
+**Report the raw label's accuracy.** Even fixed, smoothing costs accuracy
+(0.8025 vs 0.8671 end-to-end) because these errors cluster rather than being
+independent noise. Its value is display stability. The dashboard streams both.
+
 ## What this changes for session 2
 
 1. **Interleave background with the activities in the same session.** Use
