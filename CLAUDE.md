@@ -29,6 +29,7 @@ measure real-time latency, then write the report chapters.
 .venv/bin/python -m csihar.experiments --help       # Phase 4 ablations
 .venv/bin/python -m csihar.dashboard --help         # Phase 5 demo dashboard
 .venv/bin/python -m csihar.latency --help           # pipeline latency benchmark
+.venv/bin/python -m csihar.ondevice --per-layer      # ESP32-S3 deployment budget
 make figures                                        # regenerate report figures
 make report                                         # build LaTeX report (needs TeX)
 ```
@@ -73,6 +74,9 @@ compare rows trained on different devices.
 - `csihar/latency.py` — per-stage latency benchmark (parse/ingest/window/
   inference) over a simulated or replayed session; runs against an untrained
   model since latency is weight-independent.
+- `csihar/ondevice.py` — ESP32-S3 memory/compute budget for the Phase 5
+  on-device stretch goal, traced from the model's own layer shapes. Findings
+  in `docs/ondevice_feasibility.md`.
 - `docs/collection_protocol.md` — data collection rules; fill blanks, don't
   drift from it silently.
 - `docs/research_review.md` — 2026-07-16 literature audit: what was fixed
@@ -161,6 +165,10 @@ compare rows trained on different devices.
   glued to the value (`variant=25Hz;`), which made `make figures` raise on
   window/rate ablation rows and silently split the receivers series in two.
   Anything else that parses `notes` must do the same.
+- **On-device inference is single-receiver by construction** — a board holds
+  only its own CSI. Memory is not the obstacle (int8 weights are ~236 KB
+  against 16 MB flash); the ~609 KB activation arena is, and it sits entirely
+  in the first conv block. See `docs/ondevice_feasibility.md`.
 - NumPy 2.x: `np.fromstring` is gone (already hit this once).
 
 ## Non-negotiable evaluation rules (defense depends on these)
