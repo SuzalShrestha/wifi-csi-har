@@ -2,23 +2,122 @@
 \label{ch:literature}
 
 \section{WiFi Sensing and Channel State Information}
-% CSI primer: OFDM subcarriers, complex channel estimates, why human motion
-% modulates multipath. Cite survey \cite{miao2025survey}.
-[TODO]
+
+In an OFDM system the transmitted signal is divided across many narrowband
+subcarriers. The receiver estimates, for each subcarrier $k$, a complex
+channel response $H_k = |H_k| e^{j\angle H_k}$ relating the transmitted and
+received symbols. The collection of these estimates across subcarriers is the
+Channel State Information.
+
+The physical basis for sensing is multipath. The received signal is the sum
+of components arriving along paths of differing length; a path of length $d$
+contributes a phase rotation proportional to $d/\lambda$, so at 2.4\,GHz,
+where $\lambda \approx 12.5$\,cm, a path-length change of a few centimetres
+produces a full phase rotation and a substantial amplitude change through
+constructive and destructive interference. A moving human body changes many
+path lengths simultaneously, and the resulting time-varying pattern across
+subcarriers carries a signature of the motion. Because path-length change
+maps to phase change differently at each subcarrier frequency, the pattern is
+frequency-selective --- which is precisely why CSI supports finer
+discrimination than the single RSSI scalar, which collapses all of this into
+one number.
+
+Miao et al.\ \cite{miao2025survey} survey the field and organise it into a
+common pipeline --- acquisition, denoising, feature extraction,
+classification --- that this project follows. Their survey also documents the
+field's persistent difficulty: models generalise poorly across environments
+and subjects, because the learned mapping depends on a specific geometry of
+reflectors rather than on any subject-independent property of the activity.
 
 \section{Deep Learning for CSI-Based HAR}
-% SenseFi benchmark \cite{yang2023sensefi}: model families (MLP, CNN, RNN,
-% transformer) and reported regimes. Note that most reported numbers use
-% random splits (temporal leakage) — motivates our three-split protocol.
-[TODO]
+
+Early CSI recognition systems used hand-crafted statistical and spectral
+features with classical classifiers. Deep models displaced them by learning
+representations directly from the CSI time--frequency matrix. Convolutional
+networks treat the (time $\times$ subcarrier) matrix as an image and capture
+localised patterns; recurrent architectures, particularly LSTMs, model the
+temporal evolution of an activity; hybrid CNN-LSTM designs use a
+convolutional encoder for spectral structure and a recurrent layer for
+temporal dependency. More recently transformer encoders have been applied to
+the same tensors.
+
+The SenseFi benchmark of Yang et al.\ \cite{yang2023sensefi} is the most
+useful reference point, providing a PyTorch library and a common evaluation
+of these model families across public WiFi sensing datasets. Two of its
+findings inform the design here. Model architecture matters less than is
+often implied --- differences between well-tuned families are frequently
+smaller than differences between datasets or preprocessing choices --- and
+reported numbers depend heavily on the evaluation regime. This project
+accordingly limits itself to a CNN and a CNN-LSTM, spending its effort on
+data quality and evaluation rather than on architecture search.
+
+A methodological caution runs through this literature and directly motivates
+this project's protocol. Many reported results, including strong LSTM figures
+obtained by $k$-fold cross-validation, assign \emph{windows} randomly to
+folds. When windows overlap, or even when they merely come from the same
+continuous recording, temporally adjacent and nearly identical windows land
+on both sides of the split. The resulting accuracy measures how well a model
+recognises a recording, not an activity, and it is an unreliable predictor of
+deployed behaviour. Section~\ref{sec:eval-protocol} describes the three-split
+protocol adopted in response.
 
 \section{HAR on ESP32-Class Hardware}
-% Moshiri et al. dataset \cite{moshiri2021csihar}; through-wall ESP32
-% feasibility \cite{strohmayer2023wall}; ESP-Fi \cite{espfi2026}.
-% Single-antenna constraint -> amplitude-only pipelines.
-[TODO]
+
+Access to CSI on inexpensive microcontrollers changed what is practical
+outside a laboratory. Hernandez and Bulut's ESP32-CSI-Tool was the first
+widely used firmware for this purpose and established the basic approach of
+streaming CSI over serial to a host; it targets ESP-IDF v4.3 and the original
+ESP32, and remains the reference cited by much of the ESP32 sensing
+literature. Espressif's own \texttt{esp-csi} framework \cite{espcsi} now
+provides maintained support across the chip family, including the ESP32-S3,
+along with an example matching a router-plus-receivers topology. Espressif
+additionally ranks CSI quality across its chips, placing the S3 in the middle
+of the range and above the original ESP32 used in most published ESP32
+activity-recognition work.
+
+Moshiri et al.\ \cite{moshiri2021csihar} released a public ESP32 CSI dataset
+covering seven activities and demonstrated that deep models achieve high
+accuracy on this class of hardware, establishing the basic feasibility this
+project builds on. Their dataset uses a single receiver. Strohmayer and
+Kampel \cite{strohmayer2023wall} showed long-range through-wall recognition
+with ESP32 hardware, confirming that the constraint is not the radio's
+sensitivity. The more recent ESP-Fi dataset \cite{espfi2026} continues this
+direction.
+
+Two consistent properties of this body of work shaped the present design.
+Nearly all of it is amplitude-only, for the single-antenna reason set out in
+Chapter~\ref{ch:introduction}. And most of it uses a single receiver, so the
+benefit of multiple spatially separated receivers --- a central claim of this
+project --- is asserted more often than it is measured, which is why the
+receiver-count ablation is reported here as a primary result rather than as
+an afterthought.
 
 \section{Research Gap}
-% Honest cross-session/cross-subject evaluation on low-cost hardware;
-% fall detection recall as a first-class metric; Nepali deployment context.
-[TODO]
+
+Three gaps follow from the above.
+
+\textbf{Honest generalisation measurement on low-cost hardware.} Feasibility
+on ESP32-class devices is established, but reported figures are dominated by
+random-split evaluation. What a deployment needs to know --- how much
+accuracy is lost on an unseen day, and on an unseen person --- is rarely
+reported for this hardware class. This project reports all three regimes for
+every model, and treats the gap between them as a result in its own right
+rather than as a number to minimise.
+
+\textbf{Multi-receiver benefit, quantified.} Multiple receivers are commonly
+justified on the intuition that complementary geometry helps. This project
+measures the contribution directly by ablating receiver count on identical
+data with an architecture that admits the change without modification.
+
+\textbf{Falls as a first-class metric.} Fall detection is the usual
+motivation for this work, yet falling is typically reported inside an
+aggregate accuracy that its scarcity allows it to barely influence. This
+project reports falling recall separately in every result, and treats a
+system that scores well overall while missing falls as having failed at its
+stated purpose.
+
+A locally collected multi-receiver ESP32-S3 dataset, with a datasheet and
+per-session metadata, is a secondary contribution: no comparable multi-receiver
+dataset for this hardware is publicly available, and the collection
+context --- a Nepali deployment setting with commodity equipment --- differs
+from that of the existing public datasets.

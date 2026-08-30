@@ -2,15 +2,66 @@
 \label{ch:introduction}
 
 \section{Background}
-% Contactless sensing: why WiFi CSI over cameras (privacy, lighting,
-% occlusion) and wearables (compliance). CSI vs RSSI granularity.
-[TODO]
+
+Human activity recognition underpins applications from elderly-care
+monitoring to smart-building automation. The established sensing modalities
+each carry a cost that limits deployment. Cameras provide rich information
+but raise serious privacy objections in exactly the private spaces --- homes,
+bedrooms, bathrooms --- where fall detection matters most, and they degrade
+in darkness and under occlusion. Wearable inertial sensors avoid the privacy
+problem but depend on compliance: a device that is not worn, or whose battery
+has run flat, detects nothing, and the elderly users who benefit most are the
+least reliable wearers.
+
+WiFi sensing offers a third option. A radio signal propagating from a
+transmitter to a receiver arrives along many paths, reflecting and
+diffracting around walls, furniture, and people. A moving body changes the
+lengths and attenuations of those paths, so the received signal carries a
+record of motion in the environment. Because ordinary WiFi hardware is
+already deployed in most indoor spaces, this sensing is contactless,
+device-free, works in complete darkness and through soft partitions, and
+captures no imagery.
+
+Two quantities are available. The Received Signal Strength Indicator (RSSI)
+is a single scalar per packet describing total received power; it is coarse,
+and its variation confounds motion with many other effects. Channel State
+Information (CSI) is far richer: an OFDM receiver estimates the complex
+channel response of every subcarrier separately, so a single 20\,MHz packet
+yields tens of independent frequency-resolved measurements. Different
+subcarriers are affected differently by the same motion, and it is this
+frequency diversity that makes fine-grained activity classification
+feasible.
+
+Historically CSI extraction required specialised network cards --- the Intel
+5300 or Atheros chipsets --- whose cost and driver requirements confined the
+field to laboratories. Modern low-cost microcontrollers with integrated WiFi,
+in particular the Espressif ESP32 family, now expose CSI directly, making
+the sensing hardware for a multi-receiver system inexpensive enough for
+deployment in cost-constrained settings.
 
 \section{Problem Statement}
-% Recognize 5 activities + background (walking, sitting, standing, lying,
-% falling) from commodity-hardware CSI, with falling as the safety-critical
-% class. Constraint: single-antenna ESP32-S3 receivers -> amplitude-only.
-[TODO]
+
+This work addresses the recognition of five activities --- walking, sitting,
+standing, lying, and falling --- plus a background class denoting an empty
+room, from WiFi CSI captured on commodity microcontroller hardware.
+
+Falling is the safety-critical class. A missed fall is the expensive error,
+and its cost is not symmetric with a false alarm; it is also the rarest class,
+occurring as brief discrete events rather than sustained minutes of
+behaviour. The background class is equally necessary for a credible system:
+a classifier trained only on activities will confidently report an activity
+in an empty room.
+
+Two constraints shape the technical approach. First, the receivers have a
+single antenna and a consumer-grade oscillator, so raw CSI phase is corrupted
+by carrier and sampling frequency offsets, and the multi-antenna phase
+sanitisation used with specialised cards is structurally unavailable. The
+pipeline is therefore amplitude-only. Second, and more consequential for how
+results should be read, activity recognition from CSI is only useful if it
+generalises to a new day and a new person. A model that has memorised the
+radio signature of one recording session is worthless in deployment while
+appearing excellent under the evaluation protocol most commonly reported in
+this literature.
 
 \section{Objectives}
 \begin{itemize}
@@ -25,10 +76,39 @@
 \end{itemize}
 
 \section{Scope and Limitations}
-% Single person, line-of-sight-ish lab rooms, amplitude-only (single
-% antenna: raw phase is CFO/SFO-corrupted), 5+1 classes. Multi-person,
-% through-wall, and pose estimation are future work.
-[TODO]
+
+The system is scoped to a single person in the sensing area at a time.
+Multiple simultaneous occupants superimpose their perturbations on the same
+channel, and separating them is a substantially harder problem that is not
+attempted here.
+
+Recognition covers the five activities and background listed above.
+Transitional movements such as sitting down and standing up are not separate
+classes; they are trimmed from the labelled spans rather than assigned to the
+activity they precede or follow.
+
+Sensing is confined to indoor rooms with the transmitter and receivers in
+fixed, measured positions. Through-wall operation at range is not a target,
+though it has been demonstrated on comparable hardware elsewhere.
+
+Only CSI amplitude is used, for the hardware reasons given above. Phase
+features are not built into the pipeline and are not claimed.
+
+Finally, the models are trained and evaluated on data collected by this
+project. Cross-environment generalisation is measured to the limited extent
+that a second room permits, but a system deployed in an arbitrary unseen
+room should be expected to require adaptation data.
 
 \section{Report Organization}
-[TODO]
+
+Chapter~\ref{ch:literature} reviews WiFi sensing fundamentals, deep learning
+approaches to CSI-based recognition, and prior work on ESP32-class hardware,
+identifying the gap this project addresses.
+Chapter~\ref{ch:methodology} sets out the acquisition, preprocessing,
+modelling, and --- centrally --- the three-split evaluation protocol.
+Chapter~\ref{ch:system} describes the hardware deployment, software
+architecture, real-time inference path, and quality assurance.
+Chapter~\ref{ch:results} presents the dataset, model comparison across
+splits, fall detection performance, ablation studies, real-time measurements,
+and failure analysis.
+Chapter~\ref{ch:conclusion} concludes and identifies future work.

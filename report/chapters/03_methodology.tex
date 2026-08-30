@@ -2,39 +2,289 @@
 \label{ch:methodology}
 
 \section{System Overview}
-% TX: commodity router. RX: 3x ESP32-S3 N16R8 running espressif/esp-csi
-% csi_recv_router (ping router at 100 Hz, CSI from ping replies).
-% Host: serial 921600 baud -> parser -> Parquet sessions.
-[TODO]
+
+The system recognises human activity from the way a moving body perturbs the
+WiFi channel between a fixed transmitter and several fixed receivers. No
+device is carried by the subject and no camera is used.
+
+The transmitter is a commodity 2.4\,GHz WiFi router operating on a single
+locked channel at 20\,MHz bandwidth. The receivers are three ESP32-S3 N16R8
+development boards running the \texttt{csi\_recv\_router} example from
+Espressif's \texttt{esp-csi} framework \cite{espcsi}. Each receiver
+associates with the router as an ordinary station and reports the Channel
+State Information (CSI) estimated from packets it receives, emitting one CSV
+line per measurement over a USB serial link at 921\,600\,baud. A host laptop
+reads the three serial streams concurrently, timestamps every line on
+arrival, and writes each session to disk as one Parquet file per receiver
+plus a JSON metadata sidecar.
+
+Espressif's own framework was selected over the older and more widely cited
+ESP32-CSI-Tool because the latter targets ESP-IDF v4.3 and the original
+ESP32; \texttt{esp-csi} explicitly supports the S3 and ships an example
+matching this exact topology. ESP32-CSI-Tool is discussed in
+Chapter~\ref{ch:literature} as prior art.
+
+Three receivers rather than one are used because a single receiver observes
+only one transmitter--receiver path geometry, and activities that perturb
+that particular path weakly are poorly separated. Placing receivers at
+different positions and heights gives complementary multipath views of the
+same event. The value of this choice is not assumed: it is measured directly
+by the receiver-count ablation in Chapter~\ref{ch:results}.
+
+\subsection{Packet rate and the downlink traffic requirement}
+
+CSI is only produced when a receiver actually receives a packet, and only
+packets carrying an OFDM Long Training Field yield a usable channel estimate.
+Relying on the firmware's own periodic ping to the router proved
+insufficient: the router's replies and beacons are largely sent at legacy
+DSSS/CCK rates, which carry no OFDM LTF, and the observed CSI rate collapsed
+to below 1\,Hz. This was reproduced identically on ESP-IDF v5.3.2 and v5.4.4
+and is therefore a property of the radio protocol, not a toolchain defect.
+
+The system therefore generates its own downlink traffic: the host floods each
+receiver's IP address with approximately 100 packets per second of 200-byte
+UDP datagrams, which the router forwards as OFDM data frames. This yields a
+steady and reproducible 100\,Hz CSI rate per receiver. Because a session
+recorded without this traffic is silently near-empty rather than obviously
+broken, every host entry point that reads from the boards routes through the
+same traffic generator, and this is enforced by unit tests.
+
+A rate of 100\,Hz is comfortably above what the task requires. Human motion
+produces Doppler content in the low tens of Hz at 2.4\,GHz, so 100\,Hz
+provides substantial margin above the Nyquist requirement; the packet-rate
+ablation in Chapter~\ref{ch:results} quantifies how much of that margin is
+actually needed.
 
 \section{CSI Acquisition}
-% Frame format: 24 metadata columns + len int8 values, (imag, real) pairs.
-% LLTF 64 subcarriers at 20 MHz; 52 usable (DC + guard nulls removed) —
-% confirmed on real captures via detect_null_subcarriers. % TODO: confirm!
-[TODO]
+
+Each CSI record consists of 24 metadata fields followed by a quoted array of
+signed bytes. The metadata includes a sequence number, source MAC address,
+RSSI, MCS index, bandwidth, channel, and a device-local timestamp; the
+sequence number allows packet loss to be measured directly, and the channel
+and MCS fields allow a session to be rejected if the router changed
+configuration mid-recording.
+
+The byte array encodes complex subcarrier values as consecutive pairs. Per
+the ESP-IDF documentation the \emph{imaginary} part precedes the real part,
+which is the opposite of the ordering a reader would naturally assume;
+swapping them corrupts every computed amplitude while still producing
+plausible-looking output. The parser implements the documented order and
+unit tests pin it.
+
+For a 20\,MHz frame the first 128 bytes form 64 complex values corresponding
+to the L-LTF subcarriers. Of these, the DC bin and the guard bins carry no
+energy, leaving 52 usable subcarriers: buffer indices 1--26 and 38--63, which
+correspond to subcarriers $-26 \ldots -1$ and $+1 \ldots +26$.
+
+Because subcarrier buffer ordering is a known source of silent error in CSI
+projects, this mapping was not taken on trust. An empirical null-carrier
+detector, which flags any subcarrier whose mean amplitude falls below 5\% of
+the overall mean, was run on real captures of 2500 frames. It returned
+exactly the DC bin and bins 27--37 --- precisely the theoretical null set ---
+confirming the mapping on the actual hardware.
+
+Only CSI \emph{amplitude} is used. The ESP32-S3 has a single antenna and a
+consumer-grade oscillator, so raw phase is corrupted by carrier and sampling
+frequency offsets. The standard remedy is to difference phase across multiple
+antennas on the same clock, which is structurally impossible on this
+hardware. Amplitude-only processing is consistent with essentially all
+published ESP32 activity-recognition work.
 
 \section{Preprocessing Pipeline}
-% Per receiver: usable-subcarrier selection -> Hampel filter (window 11,
-% 3 sigma) -> moving-mean detrend (window 101) -> uniform resampling to
-% 100 Hz -> 3 s windows, 1.5 s hop, max packet loss 10%. Receivers aligned
-% at window level by host timestamps (independent clocks). Amplitude only.
-[TODO]
 
-\section{Dataset and Labeling}
-% Scripted sessions with labels.json segments; 0.5 s boundary trimming.
-% Subjects, environments, session counts: TODO after collection.
-[TODO]
+Preprocessing is implemented as a chain of pure functions that never mutate
+their inputs; unit tests assert non-mutation at every stage. All parameters
+live in a single frozen configuration object so that any run's preprocessing
+is fully described by one committed record.
+
+Per receiver, in order:
+
+\begin{enumerate}
+  \item \textbf{Usable-subcarrier selection.} The 64-bin buffer is reduced to
+        the 52 populated subcarriers established above.
+  \item \textbf{Hampel filtering} (window 11 samples, $3\sigma$). A sliding
+        median-absolute-deviation identifier replaces impulsive outliers with
+        the local median. These spikes originate in automatic gain control
+        steps and transient RF interference and would otherwise dominate the
+        variance-based features.
+  \item \textbf{Moving-mean detrending} (window 101 samples, i.e.\ 1\,s at
+        100\,Hz). Subtracting a centred moving mean removes the slow drift
+        caused by thermal effects and AGC, acting as a crude high-pass that
+        preserves motion-induced fluctuation while discarding the static
+        channel component. The window is constrained to be odd: an even
+        window shifts the estimated trend by half a sample and silently
+        misaligns it against the signal.
+  \item \textbf{Uniform resampling and windowing.} Samples are resampled onto
+        a fixed 100\,Hz grid and cut into 3\,s windows with a 1.5\,s hop
+        (50\% overlap). A window whose measured packet loss exceeds 10\% is
+        discarded rather than interpolated.
+\end{enumerate}
+
+The three receivers run on independent clocks with no synchronisation
+mechanism between them, so per-packet alignment across receivers is not
+meaningful. Alignment is instead performed at window level using host arrival
+timestamps, with a tolerance of $\pm 100$\,ms; a window for which any
+receiver has no matching counterpart is dropped entirely rather than
+zero-filled. The result is a tensor of shape
+$(n_{\mathrm{rx}}, T, S) = (3, 300, 52)$ per labelled window.
+
+Per-subcarrier standardisation is applied last. Its statistics are fit on the
+training split only and applied unchanged to validation and test data;
+fitting on the pooled dataset leaks test information into training and
+inflates every number it touches.
+
+\section{Dataset and Labelling}
+
+Data is collected in scripted multi-segment sessions rather than one
+recording per activity. The operator supplies a script such as
+\texttt{background:30,walking:300,standing:300}, and the tool produces a
+single continuous recording accompanied by a \texttt{labels.json} sidecar
+recording each label's start and end on the host clock. A single continuous
+recording keeps the radio configuration and receiver placement fixed across
+all activities in a session, so activity is not confounded with a device
+restart.
+
+Label boundaries are conservative: 0.5\,s is trimmed from each end of every
+labelled span, and only windows falling entirely inside the trimmed span are
+retained. This discards the transition into and out of each activity, which
+would otherwise be labelled as the activity itself. Transitions such as
+sitting down and standing up are deliberately not separate classes in this
+version of the system.
+
+A lead-in delay allows a lone subject to start the recording and leave the
+room before the labelled span begins, which is required for honest
+\texttt{background} segments.
+
+Sessions carry an explicit \texttt{exclude\_from\_dataset} flag in their
+metadata. This exists because a free-text note is not enough: an early
+rig-test capture recorded in an uncontrolled room carried a warning in its
+notes field, but no code read that field, so the capture was swept into a
+dataset assembly and contributed background windows to a reported result. The
+flag is honoured by both dataset assembly and the collection datasheet.
+
+% TODO after collection: subject count, session count per subject,
+% environments, windows per class. Table goes in Chapter 5.
+Final subject, session, and environment counts are reported with the dataset
+summary in Chapter~\ref{ch:results}.
 
 \section{Models}
-% Baseline: statistical features (7 stats + 3 band energies per
-% rx/subcarrier) -> SVM-RBF and random forest. Deep: CNN and CNN-LSTM
-% over (n_rx, 300, 52) tensors; <2M parameters.
-[TODO]
+
+\subsection{Classical baseline}
+
+A hand-crafted-feature baseline establishes the bar the deep models must
+clear. If a deep network cannot beat features this simple, the fault is in
+the pipeline rather than in the model capacity.
+
+For each (receiver, subcarrier) time series independently, ten features are
+computed: seven time-domain statistics (mean, standard deviation, median
+absolute deviation, minimum, maximum, 25th and 75th percentiles) and three
+spectral band energies, obtained by summing the squared magnitude of the real
+FFT over $[0,2)$, $[2,10)$ and $[10,30)$\,Hz. The bands are chosen to
+separate near-static posture from limb motion and from faster transients. The
+concatenated vector has $n_{\mathrm{rx}} \times S \times 10$ dimensions.
+Feature extraction is a pure function of a single window, so it cannot leak
+information across the split; only the scaler and classifier are fit on
+training rows.
+
+Two classifiers are evaluated on these features: a support vector machine
+with an RBF kernel ($C=10$) and a random forest of 300 trees, each preceded
+by standardisation.
+
+\subsection{CNN}
+
+The window tensor $(n_{\mathrm{rx}}, T, S)$ is treated as an image whose
+channels are the receivers, so time and subcarrier index form the two spatial
+axes. Four convolutional blocks (32, 64, 128, 128 channels), each of a
+$3\times3$ convolution, batch normalisation, ReLU and $2\times2$ max pooling,
+are followed by global average pooling, dropout ($p=0.3$) and a linear
+classifier --- roughly 240\,000 parameters.
+
+Two details make the ablations possible without changing the architecture.
+Receivers enter as input channels, so the receiver-count ablation is simply a
+different $n_{\mathrm{rx}}$. All pooling uses ceiling mode and the trunk ends
+in adaptive pooling, so the short windows and decimated rates used in the
+window-length and packet-rate ablations never collapse the feature map to
+zero size.
+
+\subsection{CNN-LSTM}
+
+The second model separates local spectral pattern extraction from temporal
+modelling. The window's time axis is divided into fixed 25-sample chunks
+(0.25\,s at 100\,Hz, giving 12 steps for a 3\,s window). A shared-weight
+two-block CNN encoder (32, 64 channels) maps each chunk to a feature vector;
+a bidirectional LSTM with 128 hidden units per direction models the resulting
+sequence; the outputs are mean-pooled over time and passed through dropout to
+a linear classifier. Sharing encoder weights across chunks keeps the
+parameter count modest and makes the encoder invariant to where in the window
+a motion occurs.
+
+\subsection{Training}
+
+Both networks are trained with Adam (learning rate $10^{-3}$, weight decay
+$10^{-4}$), batch size 32, for up to 60 epochs with early stopping on
+validation macro-F1 (patience 5). The loss is cross-entropy weighted by
+inverse class frequency, because falling is both the scarcest class --- it is
+collected in short discrete events rather than continuous minutes --- and the
+one whose misclassification carries the highest cost.
+
+Early stopping uses a validation set drawn from the \emph{same split regime}
+as the test being run. When a cross-session result is being produced, the
+validation set is a held-out session, not a random sample of windows;
+validating on randomly sampled windows would select the epoch that best
+exploits temporal leakage and would therefore optimise directly against the
+property the split exists to measure.
 
 \section{Evaluation Protocol}
-% THE core methodological claim: three splits (random-window for literature
-% comparability — leaky by design; cross-session; leave-one-subject-out).
-% Normalization statistics fit on train only. Falling recall reported
-% separately. Fixed seeds; every run appends a provenance row (git SHA,
-% config JSON) to experiments/results/.
-[TODO]
+\label{sec:eval-protocol}
+
+The evaluation protocol is the central methodological claim of this work.
+Random shuffling of windows into training and test sets --- the most common
+protocol in the CSI activity-recognition literature --- places temporally
+adjacent, nearly identical windows on both sides of the split. Because a
+3\,s window with a 1.5\,s hop shares half its samples with its neighbour, a
+model can score very highly by recognising which recording a window came from
+rather than which activity it contains. Such numbers do not survive contact
+with a live demonstration.
+
+Every model is therefore reported on three splits:
+
+\begin{enumerate}
+  \item \textbf{Random window split.} Stratified random assignment of
+        windows. Retained for comparability with published results, and
+        understood to be optimistic by construction.
+  \item \textbf{Cross-session split.} Whole sessions are held out, so the
+        test set was recorded at a different time from the training data.
+        This measures robustness to the day-to-day variation --- furniture
+        micro-changes, clothing, router thermal state --- that a deployed
+        system faces.
+  \item \textbf{Cross-subject split.} Leave-one-subject-out: all windows of
+        one person form the test set, with metrics pooled across folds. This
+        is the honest estimate of performance on a person the system has
+        never seen.
+\end{enumerate}
+
+A fourth, cross-environment split holds out an entire room and is reported
+where second-room data permits.
+
+Two safeguards support this protocol. Splits are constructed so that no
+session or subject straddles the boundary. Separately, every split is checked
+for degenerate class coverage --- a test set missing classes present in
+training --- and the warning is written into the results record. This
+matters: an early cross-session split on single-session-per-class pilot data
+produced a test set containing only the background class, yielding an
+accuracy near zero that was uninterpretable rather than informative, and a
+complementary run whose 97\% accuracy came with a macro-F1 of 0.16. Neither
+number means what it appears to mean, and the check makes that visible in the
+results file rather than in a reader's eventual confusion.
+
+Reported metrics are accuracy, macro-F1, and the full confusion matrix.
+Macro-F1 is the primary figure of merit because the classes are imbalanced.
+Recall on the falling class is always reported separately: a missed fall is
+the costly error in this application, and it is invisible in an aggregate
+accuracy figure.
+
+Every run is executed with a fixed seed and appends a provenance row --- git
+commit SHA, complete configuration as JSON, sample counts, and any degenerate
+split warning --- to a results CSV under \texttt{experiments/}. Every figure
+in this report is regenerated from those files by a script; no plot is
+produced by hand.

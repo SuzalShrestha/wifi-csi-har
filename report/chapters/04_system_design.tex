@@ -2,29 +2,155 @@
 \label{ch:system}
 
 \section{Hardware Setup}
-% Room geometry, receiver placement diagram, router config (locked 20 MHz,
-% channel from survey), powered USB hub. Photo + diagram.
-[TODO]
+
+The deployment consists of one transmitter and three receivers in a single
+room.
+
+The transmitter is a commodity 2.4\,GHz router operating at 20\,MHz
+bandwidth on a fixed channel. Bandwidth is locked because a mid-session
+change in channel width alters the number and spacing of subcarriers and
+invalidates every window that straddles it.
+
+% TODO: fill in final router model and channel once the dedicated AP
+% decision is made; insert layout diagram and room photograph.
+Channel selection was informed by a site survey of 41 scans taken over
+approximately seven minutes at the collection site, with the project's own
+access point excluded from the interference figures. The occupied channel
+carried a neighbouring access point at $-45$\,dBm against the project's own
+$-41$\,dBm, i.e.\ near-equal power co-channel contention, while channel 11
+was effectively clear. Such a neighbour both consumes airtime and injects
+uncontrolled multipath variation into every recorded window.
+
+Two constraints follow. First, the subscriber-supplied router used during
+bring-up performs automatic channel selection and does not expose a manual
+setting, so the operating channel is not pinned by configuration; a dedicated
+access point --- which needs no internet connection, only to transmit --- is
+the preferred remedy and also removes band steering and competing clients.
+Second, because the channel cannot be guaranteed by configuration, it is
+verified from the data instead: every session is checked for channel and
+bandwidth drift and rejected if its frames straddle two channels.
+
+The three receivers are ESP32-S3 N16R8 development boards on tripods at
+distinct positions and heights around the sensing area, with floor markings
+so that geometry is reproducible across sessions. Each connects to a powered
+USB hub and thence to the host.
+
+One hardware detail is worth recording because it is not obvious and cost a
+bring-up session. The devkit exposes two USB-C ports, and both enumerate as
+serial devices that emit CSI. Only the UART bridge port carries the primary
+console at 921\,600\,baud, which is the path validated at 100\,Hz with no
+loss; the native USB port carries a secondary console at 115\,200\,baud and
+has only ever been observed unloaded. A board on the wrong port therefore
+appears to work while being unfit for collection. The two are distinguished
+by their USB descriptors. Relatedly, asserting DTR/RTS on the native port
+drops the S3 into download mode, where a correctly flashed board presents
+exactly as an unflashed one.
+
+Receiver identity is stable across reboots because the serial device path
+derives from the USB bridge's serial number, so each board maps to a fixed
+logical identifier. IP addresses are DHCP leases and are re-confirmed before
+each session, since the downlink traffic generator addresses receivers by IP.
 
 \section{Software Architecture}
-% csihar package: parser -> collector (threaded 3-port serial) -> storage
-% (Parquet + metadata.json) -> preprocessing (pure functions) -> dataset
-% assembly + splits -> training engine -> checkpoint contract.
-[TODO]
+
+The host software is the \texttt{csihar} Python package, organised as small
+modules with unit tests alongside. Data structures are frozen dataclasses and
+transformations are pure functions returning new arrays, so a pipeline stage
+can be tested in isolation and cannot corrupt a caller's data.
+
+The offline path is a linear chain. The \emph{parser} converts one firmware
+CSV line into an immutable frame object. The \emph{collector} runs one reader
+thread per receiver, timestamps each line on arrival, and writes per-receiver
+Parquet files with a JSON metadata sidecar that makes each session
+self-describing. \emph{Preprocessing} applies the fixed chain of
+Chapter~\ref{ch:methodology}. \emph{Dataset assembly} walks the session
+directories, applies label segments with boundary trimming, aligns receivers
+at window level, honours the exclusion flag, and emits a single compressed
+archive together with per-window subject, session, and environment tags ---
+the tags the three splits are constructed from. The \emph{training engine}
+consumes that archive and writes checkpoints plus a provenance row per run.
+
+Two supporting components exist because hardware time is the project's
+scarcest resource. A \emph{simulator} generates synthetic CSI in the exact
+byte-level firmware format, so every downstream stage can be developed and
+tested without boards attached. A \emph{preflight check} performs a ten-second
+live verification that all three receivers are present, at rate, and on one
+channel; running it costs seconds and avoids discovering a dead board at the
+end of a twenty-five minute recording.
 
 \section{Real-Time Inference}
-% Streaming buffers per receiver; online window assembly mirrors the offline
-% pipeline exactly (same function order); majority vote over last 5
-% predictions with confidence-thresholded "unknown" state; 1.5 s hop.
-% End-to-end latency and detection delay: TODO measure.
-[TODO]
+
+The real-time path maintains a ring buffer per receiver and emits a
+prediction on a fixed 1.5\,s cadence. Each tick assembles the most recent
+3\,s of every receiver's buffer into a window using the \emph{same} functions
+in the \emph{same} order as the offline pipeline. This is deliberate: a
+divergence between training-time and serving-time preprocessing degrades
+accuracy in a way that is invisible in offline evaluation, so the two paths
+share code rather than reimplementing the chain.
+
+Raw per-window predictions flicker, since a single ambiguous window can flip
+the output. Predictions are therefore smoothed by majority vote over the last
+five windows, with any prediction below a confidence threshold of 0.6 voting
+as \texttt{unknown}. Ties break toward the most recent label, and an empty
+history yields \texttt{unknown}. The explicit \texttt{unknown} state matters
+for credibility: a system that always names one of six activities will
+confidently misreport an empty room or an unmodelled action.
+
+Falling requires an exception to this smoothing. A fall is a transient
+lasting one or two windows and can lose every majority vote it participates
+in, so the fall alert has a fast path: it fires when the \emph{smoothed}
+label is falling, or when a \emph{raw} prediction of falling clears the
+confidence threshold. Without this the alert could not fire at all in
+realistic conditions --- an error found by review rather than by testing,
+since offline metrics would never have exposed it.
+
+Measured on the real bring-up capture with three receivers, per-tick compute
+time has a 95th-percentile of approximately 23\,ms against the 1500\,ms hop
+budget, a margin of roughly 65$\times$. Window construction accounts for
+about 85\% of that, inference for about 3\,ms, and parsing and ingestion for
+about 0.02\,ms per frame. The system is therefore not compute-bound:
+end-to-end latency is dominated by the 3\,s of buffering a window requires,
+and is a function of the chosen window length rather than of implementation
+efficiency. Reducing perceived latency means shortening the window and
+accepting the accuracy cost measured in the window-length ablation.
+
+% TODO: report final end-to-end latency and detection delay after activity
+% onset, measured with the final trained model.
 
 \section{Demo Dashboard}
-% FastAPI + WebSocket; live per-receiver heatmaps, smoothed prediction,
-% confidence, latching fall-alert banner; fully offline page.
-[TODO]
+
+The dashboard is a FastAPI application serving a single page over a
+WebSocket, showing live per-receiver amplitude heatmaps, the smoothed
+prediction with its confidence, and a latching fall-alert banner. The page
+has no external dependencies and functions without internet access, since
+demonstration venues cannot be relied upon.
+
+Like every other live entry point, the dashboard drives the downlink traffic
+generator. This is enforced by test rather than convention: the dashboard,
+the guided session recorder, and the real-time engine each shipped once
+without that wiring, and each would have silently produced near-empty data.
 
 \section{Quality Assurance}
-% Session QA gates (rate, loss, gaps), 150+ unit tests, simulator for
-% hardware-free development.
-[TODO]
+
+Quality control operates at two levels.
+
+Per session, an automated check runs over each receiver's Parquet file and
+reports mean packet rate, sequence-gap fraction, dominant MCS fraction,
+channel and bandwidth stability, and whether the empirically detected null
+subcarriers match the expected set. A receiver passes if it sustains at least
+90\,Hz, loses under 5\% of sequence numbers, and holds a single MCS for at
+least 90\% of frames. Because the check runs immediately after recording, a
+defective session is discovered the same day and re-recorded, rather than
+being found at training time when the subject and room are no longer
+available.
+
+Per commit, the test suite covers the pipeline end to end: parser format
+pinning, non-mutation of preprocessing inputs, split correctness including
+degenerate-coverage detection, the training and checkpoint contract, and the
+traffic-generator wiring of all five live entry points. The suite currently
+comprises 219 tests and is kept green.
+
+Running progress against the collection targets is tracked by a datasheet
+tool that reports seconds and estimated windows per class, subject, and
+session, so the gap between collected and required data is visible
+throughout collection rather than at its end.
