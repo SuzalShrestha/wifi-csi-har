@@ -60,8 +60,7 @@ compare rows trained on different devices.
 - `csihar/traffic.py` — UDP downlink generator; `downlink_traffic()` context
   manager and `add_traffic_argument()` are the shared wiring every live
   entry point uses.
-- `csihar/preprocessing/` — pure functions: subcarriers, filters, windowing,
-  normalize.
+- `csihar/preprocessing/` — pure functions: subcarriers, filters, windowing.
 - `csihar/simulate.py` — synthetic CSI in byte-exact firmware format; use it
   to develop/test anything downstream without hardware.
 - `csihar/storage.py` — Parquet + metadata.json session layout. Set
@@ -177,7 +176,7 @@ compare rows trained on different devices.
    cross-session, cross-subject (leave-one-subject-out). Never quote a
    random-split number alone — temporal leakage inflates it.
 2. Scalers/augmentation statistics fit on **train split only**
-   (`fit_scaler` enforces the shape; you enforce the discipline).
+   (`train.norm_fit` takes the train indices; you enforce the discipline).
 3. Falling is safety-critical: always report its recall separately.
 4. Every experiment: fixed seed, config committed, results CSV under
    `experiments/`. Figures regenerate from scripts — no hand-made plots.

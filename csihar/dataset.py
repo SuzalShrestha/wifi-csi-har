@@ -13,7 +13,7 @@ flows through here, so the rules are enforced in code, not convention:
 - ``split_random`` is provided ONLY for literature comparability and its
   docstring says so.
 
-Scaler fitting stays in ``preprocessing.normalize`` — fit on train indices
+Normalization is fit in ``train.norm_fit`` — on train indices
 only.
 """
 

@@ -3,7 +3,7 @@
 Discipline encoded here, not left to convention:
 
 - normalization statistics are fit on training windows only (validation and
-  test see train-fitted stats — same rule as ``preprocessing.normalize``);
+  test see train-fitted stats);
 - validation is carved from the TRAIN side of the split, stratified, so the
   test set is never touched until the single final evaluation;
 - every run is seeded, appends a provenance row via ``evaluate.append_result``,
