@@ -11,10 +11,11 @@ tested on simulated data — parser -> collector -> preprocessing ->
 dataset/splits -> baseline + CNN/CNN-LSTM training -> ablation runner
 (csihar/experiments.py) -> realtime engine -> web dashboard
 (csihar/dashboard.py) -> figures pipeline (csihar/figures.py) + LaTeX report
-skeleton (report/). Everything remaining is hardware/data work: flash boards
-(/flash-firmware), confirm subcarrier nulls on real captures, collect the
-pilot dataset (/collect-session), rerun training/ablations on real data,
-measure real-time latency, then write the report chapters.
+skeleton (report/). Hardware bring-up, null confirmation, latency and pilot
+session 1 are done. Everything remaining is data-gated: pilot session 2
+(+ first cued falls), the full M3 collection (/collect-session), then
+training/ablations on real data and the results chapters. Live checklist:
+[docs/COMPLETION_GUIDE.md](docs/COMPLETION_GUIDE.md).
 
 ## Commands
 
@@ -26,6 +27,7 @@ measure real-time latency, then write the report chapters.
 .venv/bin/python -m csihar.preflight --help         # verify the rig BEFORE recording
 .venv/bin/python -m csihar.collector --help         # record a session
 .venv/bin/python -m csihar.datasheet datasets/raw    # collection progress vs M3 targets
+.venv/bin/python -m csihar.dataset --out ds.npz      # raw sessions -> dataset .npz (+provenance)
 .venv/bin/python -m csihar.experiments --help       # Phase 4 ablations
 .venv/bin/python -m csihar.dashboard --help         # Phase 5 demo dashboard
 .venv/bin/python -m csihar.latency --help           # pipeline latency benchmark
@@ -152,6 +154,17 @@ compare rows trained on different devices.
   confident ones. That made the smoother strictly dominated: identical
   flicker to raw and 6 points worse. Low-confidence entries now drop out of
   the vote; `"unknown"` is returned only when nothing recent is confident.
+- **Falls are labelled per cued event, never per segment** (2026-09-30).
+  A falling segment is ~90% standing/lying/getting up between falls.
+  `session_script` cues each fall and writes cue times to `labels.json`
+  `events`; assembly keeps only windows containing `[cue+0.5, cue+2.0]` s.
+  Record falls only via `session_script --script "falling:300"`.
+- **The default 1 s detrend removes breathing** (−20 dB at 0.25 Hz,
+  measured). Breathing is the only cue separating a motionless person from
+  an empty room, which explains pilot 1's background/standing collapse.
+  `--detrend-window 3001` keeps it. Checkpoints carry their preprocessing,
+  and serving uses `realtime.serving_preprocess_config`: never build a
+  `PreprocessConfig()` by hand for a trained model.
 - **Amplitude only.** Single antenna → raw phase is CFO/SFO-corrupted;
   multi-antenna phase sanitization is impossible on this hardware. Don't
   build phase features into the main pipeline.

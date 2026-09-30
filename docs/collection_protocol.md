@@ -96,8 +96,10 @@ from window labels during preprocessing.
 ## Per-session script (operator reads aloud, subject follows)
 1. Start collector with correct `--label --subject --env`
 2. 10 s background (subject outside room) — sanity reference
-3. 5 min of the target activity (falls: onto mattress, spotter present,
-   alternate forward/backward/sideways, ~15 s spacing)
+3. 5 min of the target activity. Falls: `session_script --script
+   "falling:300" --fall-every 15` only — onto mattress, spotter present,
+   alternate forward/backward/sideways, **fall on each FALL NOW cue**. Cue
+   times are the labels; see the collect-session skill.
 4. Run `python -m csihar.view --replay <session>/rx1.parquet` immediately;
    discard and redo the session if the heatmap looks wrong or any receiver
    logged high loss

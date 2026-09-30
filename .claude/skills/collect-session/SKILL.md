@@ -104,14 +104,35 @@ no chance of mislabeling a whole file.
 
 It prompts before each segment and waits for Enter, so the subject can get
 into position; the segment clock starts only after that. Run falls as their
-own session (see the safety rules below), not as a segment in a long script.
+own scripted session (see the safety rules below).
+
+Falls are cued, never free-running. Inside a `falling` segment the script
+prints `>>> FALL NOW (n) <<<` with a terminal bell every `--fall-every`
+seconds (default 15) and records each cue time in `labels.json` `events`.
+Only the window around each cue is labelled `falling`; the rest of the
+segment (standing up, lying on the mattress) is dropped at assembly. So the
+subject falls **on the cue**, not whenever ready. A 300 s segment gives
+~19 falls, i.e. ~19 falling windows:
+
+```bash
+.venv/bin/python -m csihar.session_script \
+  --port /dev/cu.usbmodem5B5E0807741=rx1 \
+  --port /dev/cu.usbmodem5C842982391=rx2 \
+  --port /dev/cu.usbmodem5C842990031=rx3 \
+  --traffic 192.168.1.97 --traffic 192.168.1.98 --traffic 192.168.1.99 \
+  --script "falling:300" --fall-every 15 --subject sujal --env room_a
+```
+
+`collector --label falling` is refused: a whole-session falling label would
+be ~90% not-falling.
 
 ### Fall sessions — safety rules
 
 - Falls happen onto a mattress.
 - A spotter is present at all times.
 - Alternate fall direction each rep: forward, backward, sideways.
-- Space repetitions ~15 s apart.
+- One fall per cue (~15 s apart). If a fall is badly late or skipped, say
+  so in `--notes`; its window will be mislabelled.
 
 ## 3. During the session
 

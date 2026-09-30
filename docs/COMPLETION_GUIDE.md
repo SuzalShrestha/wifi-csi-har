@@ -1,14 +1,17 @@
 # Completion guide — what's left to finish this project
 
-Audited 2026-08-30 against IMPLEMENTATION_PLAN.md. Read AGENTS.md first
-(project brief, hard-won facts, non-negotiable evaluation rules); this file
+Audited 2026-08-30, re-audited 2026-09-30 (see `docs/research_review.md`
+"Audit 2"). Read CLAUDE.md first (project brief, hard-won facts,
+non-negotiable evaluation rules); this file
 only says **what remains and who does it**. Update the checkboxes here as
 work lands; don't duplicate protocol details that live in
 `docs/collection_protocol.md`.
 
 ## Where the project stands
 
-- **All host-side software is DONE and green** (219 tests pass): parser →
+- **All host-side software is DONE and green** (252 tests pass as of
+  2026-09-30; windowing is 200x faster and training memory ~3x lower, so
+  the full M3 dataset now fits Colab): parser →
   collector/preflight/session_script → preprocessing → dataset/splits →
   baselines + CNN/CNN-LSTM → ablation runner → realtime engine → dashboard →
   figures → LaTeX skeleton. No software phase is blocking.
@@ -22,9 +25,10 @@ work lands; don't duplicate protocol details that live in
   sessions; cross-session split was degenerate).
 - **Collection progress: ~5% of M3** (1195 / 25,000 windows, 1 / 8 subjects,
   0 falling seconds, 1 environment, 1 day).
-- Timeline check: plan puts Phase 3 (full collection) at weeks 9–14
-  (Bhadra/Ashwin). It is now early Bhadra — **data collection is the
-  critical path** and everything else waits on it.
+- Timeline check (2026-09-30): Phase 3's Bhadra/Ashwin window is closing
+  with ~5% collected and no session recorded since 2026-08-28. **Data
+  collection is the critical path.** Plan: 24 scripted subject-sessions
+  (~20 h) over 5–6 weeks. Team members now; outside subjects after Tihar.
 
 ## Blockers found in the 2026-08-30 audit (fix before anything else)
 
@@ -39,13 +43,15 @@ work lands; don't duplicate protocol details that live in
   re-assembly (different window/hop, subcarrier choices) lose session 1 —
   note it and move on; session 1 data was never going to be in the report
   anyway.
-- [ ] **Uncommitted repo state.** `CLAUDE.md` was rewritten to generic
+- [x] **Uncommitted repo state.** (resolved 2026-09-30 on `audit/2026-09-30`:
+  branches merged; AGENTS.md/.agents dropped as stale copies) `CLAUDE.md` was rewritten to generic
   guidelines with the project brief moved to `AGENTS.md` (+ a stray root
   copy `wifi csi har.md` — likely accidental, probably delete);
   `.agents/`, `docs/figures/cm_*.png`, `experiments/results/dl.csv` are
   untracked. Evaluation rule 4 requires results CSVs and configs committed.
   Decide the CLAUDE.md/AGENTS.md arrangement deliberately, commit the rest.
-- [ ] `experiments/results/dl.csv` rows have `git_sha=unknown` (Colab runs
+- [x] `experiments/results/dl.csv` rows have `git_sha=unknown` (notebook now
+  requires a git clone) (Colab runs
   without the repo). Future Colab runs must record the SHA — pass it in or
   clone the repo in the notebook. Those pilot rows also predate the
   degenerate-split detection; treat their cross-session numbers as invalid
@@ -67,9 +73,10 @@ Ordered; each item names its skill.
 - [ ] **Pilot session 2** (`/collect-session`), applying the four changes at
   the end of `docs/pilot_session_1.md`: interleave background between
   activities, reverse activity order, different day, `--lead-in 15`. Then
-  `/validate-session`.
-- [ ] **First falling data**: mattress + spotter, forward/backward/sideways,
-  ~15 s spacing. Falling has 0 seconds collected and is the safety-critical
+  `/validate-session`. Do it before Dashain.
+- [ ] **First falling data**: `session_script --script "falling:300"
+  --fall-every 15`. Mattress + spotter, forward/backward/sideways, fall
+  **on each cue** (cue times are the labels). Falling has 0 seconds collected and is the safety-critical
   class.
 - [ ] **Recruit 4–6 outside subjects** (8–10 total incl. team). This has the
   longest lead time — start scheduling now.
@@ -79,6 +86,8 @@ Ordered; each item names its skill.
   track progress with `python -m csihar.datasheet datasets/raw`.
 - [ ] **Back up every accepted session to ≥2 places same-day** (see blocker
   above for why this is now a checklist item, not advice).
+- [ ] Install the report's TeX deps once: `sudo tlmgr install latexmk
+  ieeetran` (IEEEtran.bst is missing, so all citations render as `?`).
 - [ ] Run heavy training on Colab/Kaggle when the agent hands over configs
   (no GPU on this machine).
 - [ ] Phase 6 humans-only: rehearse live demo 3× with an unseen person,
@@ -89,7 +98,14 @@ Ordered; each item names its skill.
 Trigger for most of this: a new validated session landing in
 `datasets/raw/`, or the user saying data is ready.
 
-- [ ] **After pilot session 2** (`/train-model`): re-assemble, re-run
+- [ ] **Calibrate fall labels** on the first fall session: motion energy
+  around each cue vs `PreprocessConfig.fall_onset_s/fall_end_s`.
+- [ ] **Presence/breathing experiment** on pilot session 2 (research_review
+  Audit 2 §B.2): `python -m csihar.dataset --window-s 20 --hop-s 5
+  --detrend-window 3001`, then the baseline, background vs static classes
+  cross-session.
+- [ ] **After pilot session 2** (`/train-model`): re-assemble with
+  `python -m csihar.dataset`, re-run
   baselines + CNN/CNN-LSTM on random and cross-session splits (now
   non-degenerate — background is interleaved). Verify the pilot-1 drift
   hypothesis: if reversing activity order collapses the within-session
