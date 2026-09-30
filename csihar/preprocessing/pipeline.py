@@ -29,6 +29,12 @@ class PreprocessConfig:
     detrend_window: int = 101
     align_tolerance_s: float = 0.1
     boundary_margin_s: float = 0.5
+    # Where the fall motion sits relative to its cue (reaction, then descent).
+    # A window is labelled falling only if it contains all of
+    # [cue + fall_onset_s, cue + fall_end_s]. Calibration knob: check it
+    # against the motion-energy peak on the first real fall session.
+    fall_onset_s: float = 0.5
+    fall_end_s: float = 2.0
 
 
 def preprocess_stream(

@@ -51,6 +51,7 @@ class SessionSummary:
     environment: str
     date: str
     seconds_by_label: dict[str, float]
+    fall_events: int = 0
 
     @property
     def total_seconds(self) -> float:
@@ -66,9 +67,14 @@ def summarize_session(session_dir: Path) -> SessionSummary | None:
 
     labels_path = session_dir / "labels.json"
     seconds: dict[str, float] = defaultdict(float)
+    fall_events = 0
     if labels_path.exists():
-        for seg in json.loads(labels_path.read_text())["segments"]:
+        labels = json.loads(labels_path.read_text())
+        for seg in labels["segments"]:
             seconds[seg["label"]] += float(seg["end_ts"]) - float(seg["start_ts"])
+        fall_events = sum(
+            1 for e in labels.get("events", []) if e.get("label") == "falling"
+        )
     else:
         label = meta.get("label", "")
         if label not in LABEL_NAMES:
@@ -81,6 +87,7 @@ def summarize_session(session_dir: Path) -> SessionSummary | None:
         environment=str(meta.get("environment", "")),
         date=session_dir.name[:8],
         seconds_by_label=dict(seconds),
+        fall_events=fall_events,
     )
 
 
@@ -145,7 +152,12 @@ def format_report(
     total_windows = 0
     for label in LABEL_NAMES:
         secs = by_label.get(label, 0.0)
-        windows = _estimated_windows(secs, cfg)
+        # Falls are event-labelled: ~one window per cued fall, however long
+        # the falling segments ran.
+        windows = (
+            sum(s.fall_events for s in summaries) if label == "falling"
+            else _estimated_windows(secs, cfg)
+        )
         total_windows += windows
         flag = "" if secs else "   <- MISSING"
         lines.append(

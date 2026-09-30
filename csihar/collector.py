@@ -130,7 +130,14 @@ def main(argv: list[str] | None = None) -> int:
         "--port", action="append", required=True, metavar="DEV=ID",
         help="serial port and receiver id, e.g. /dev/cu.usbmodem101=rx1 (repeatable)",
     )
-    ap.add_argument("--label", required=True, help="activity label for this session")
+    ap.add_argument(
+        "--label", required=True,
+        # falling is excluded: a whole-session falling label is mostly
+        # standing/lying between falls. session_script cues each fall.
+        choices=("walking", "sitting", "standing", "lying", "background"),
+        help="activity label for this session (record falls with "
+        "csihar.session_script, which cues each fall)",
+    )
     ap.add_argument("--subject", required=True)
     ap.add_argument("--env", default="room_a")
     ap.add_argument("--duration", type=float, default=60.0, help="seconds")

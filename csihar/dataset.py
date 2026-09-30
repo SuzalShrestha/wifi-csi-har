@@ -101,6 +101,26 @@ def _load_segments(session_dir: Path) -> list[Segment] | None:
     return segments
 
 
+def _load_fall_cues(session_dir: Path) -> list[float]:
+    """Fall cue times from labels.json ``events`` (empty if none)."""
+    path = session_dir / "labels.json"
+    if not path.exists():
+        return []
+    events = json.loads(path.read_text()).get("events", [])
+    return [float(e["ts"]) for e in events if e.get("label") == "falling"]
+
+
+def _contains_fall(
+    start_ts: float, cues: list[float], cfg: PreprocessConfig
+) -> bool:
+    """True if the window holds the whole expected fall motion of some cue."""
+    end_ts = start_ts + cfg.window_s
+    return any(
+        start_ts <= cue + cfg.fall_onset_s and end_ts >= cue + cfg.fall_end_s
+        for cue in cues
+    )
+
+
 def _segment_label(
     segments: list[Segment], start_ts: float, window_s: float, margin_s: float
 ) -> str | None:
@@ -119,10 +139,15 @@ def assemble_session(session_dir: Path, cfg: PreprocessConfig) -> SessionWindows
     labels.json, windows not fully inside any margin-trimmed segment are
     dropped (transition trimming); otherwise metadata.json's label applies
     to every window.
+
+    ``falling`` is event-labelled: a falling span is mostly standing, lying
+    and getting up between falls, so only windows containing a cued fall
+    (see ``_contains_fall``) keep the label and the rest are dropped.
     """
     meta = json.loads((session_dir / "metadata.json").read_text())
     session_label = meta.get("label", "")
     segments = _load_segments(session_dir)
+    fall_cues = _load_fall_cues(session_dir)
     if segments is None and session_label not in _LABEL_TO_ID:
         raise ValueError(
             f"session {session_dir.name}: unknown label {session_label!r}"
@@ -137,6 +162,7 @@ def assemble_session(session_dir: Path, cfg: PreprocessConfig) -> SessionWindows
         streams[pq.stem] = preprocess_stream(host_ts, amps, cfg)
 
     rx_ids = sorted(streams)
+    dropped_fall_span = False
     xs: list[np.ndarray] = []
     ys: list[int] = []
     for group in align_receivers(streams, tolerance_s=cfg.align_tolerance_s):
@@ -149,9 +175,18 @@ def assemble_session(session_dir: Path, cfg: PreprocessConfig) -> SessionWindows
             )
             if label is None:
                 continue  # gap / straddles a boundary -> dropped
+        if label == "falling" and not _contains_fall(start_ts, fall_cues, cfg):
+            dropped_fall_span = True
+            continue
         xs.append(np.stack([group[rx].values for rx in rx_ids]))
         ys.append(_LABEL_TO_ID[label])
 
+    if dropped_fall_span and not fall_cues:
+        warnings.warn(
+            f"session {session_dir.name}: falling data without fall cues - "
+            "no window can be labelled falling. Record falls with "
+            "csihar.session_script so every fall is cued."
+        )
     if xs:
         X = np.stack(xs).astype(np.float32)
     else:
