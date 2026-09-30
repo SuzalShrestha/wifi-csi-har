@@ -442,3 +442,16 @@ def test_falling_without_cues_yields_no_windows_and_warns(tmp_path):
     with pytest.warns(UserWarning, match="without fall cues"):
         part = assemble_session(session, CFG)
     assert part.X.shape[0] == 0
+
+
+def test_cli_writes_dataset_with_provenance(raw_dir, tmp_path):
+    from csihar.dataset import main
+
+    out = tmp_path / "ds.npz"
+    main(["--raw", str(raw_dir), "--out", str(out), "--detrend-window", "51"])
+    ds = load_dataset(out)
+    assert ds.X.shape[0] > 0
+    with np.load(out) as z:
+        prov = json.loads(str(z["provenance"]))
+    assert prov["preprocess"]["detrend_window"] == 51
+    assert len(prov["sessions"]) == 4

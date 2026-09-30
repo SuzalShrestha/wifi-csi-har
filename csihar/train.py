@@ -340,6 +340,13 @@ def _model_config(cfg: TrainConfig, X: np.ndarray, n_classes: int) -> dict:
     return config
 
 
+def _trained_preprocess(ds: HarDataset) -> dict:
+    """{"preprocess": cfg dict} from the dataset's provenance, or {}."""
+    if not ds.provenance:
+        return {}
+    return {"preprocess": json.loads(ds.provenance)["preprocess"]}
+
+
 def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
     """Train per cfg, evaluate ONCE on test, persist checkpoint + results row.
 
@@ -442,7 +449,9 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
         label_names=ds.label_names,
         norm_mean=mean,
         norm_std=std,
-        config=model_config,
+        # Serving must preprocess exactly as training did (detrend window,
+        # etc.); realtime/dashboard read this back.
+        config={**model_config, **_trained_preprocess(ds)},
     )
     append_result(
         Path(cfg.results_csv),

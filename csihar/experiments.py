@@ -57,6 +57,7 @@ def _with_x(ds: HarDataset, X: np.ndarray) -> HarDataset:
         sessions=ds.sessions.copy(),
         environments=ds.environments.copy(),
         label_names=ds.label_names,
+        provenance=ds.provenance,
     )
 
 

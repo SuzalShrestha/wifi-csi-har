@@ -363,3 +363,30 @@ def test_degenerate_split_is_warned_and_written_into_the_results_row(
         row = next(csv.DictReader(fh))
     assert "DEGENERATE SPLIT" in row["notes"]
     assert "pilot" in row["notes"]  # the operator's own note survives
+
+
+def test_checkpoint_carries_training_preprocessing_to_serving(sim_dataset, tmp_path):
+    from dataclasses import asdict
+
+    from csihar.realtime import serving_preprocess_config
+
+    trained = PreprocessConfig(detrend_window=3001)
+    ds = replace(sim_dataset, provenance=json.dumps({"preprocess": asdict(trained)}))
+    cfg = TrainConfig(
+        epochs=1, batch_size=8,
+        results_csv=str(tmp_path / "dl.csv"),
+        checkpoints_dir=str(tmp_path), figures_dir=str(tmp_path),
+    )
+    _, path = train_model(ds, cfg)
+    served = serving_preprocess_config(load_checkpoint(path))
+    assert served.detrend_window == 3001
+    assert served.window_s == pytest.approx(ds.X.shape[2] / served.fs)
+
+
+def test_serving_defaults_when_checkpoint_predates_provenance():
+    from types import SimpleNamespace
+
+    from csihar.realtime import serving_preprocess_config
+
+    served = serving_preprocess_config(SimpleNamespace(config={"n_time": 200}))
+    assert served == PreprocessConfig(window_s=2.0)

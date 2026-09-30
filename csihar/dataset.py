@@ -1,5 +1,8 @@
 """Session -> tensor assembly and the three mandatory evaluation splits.
 
+CLI (raw sessions -> dataset .npz for baseline/train/experiments):
+    python -m csihar.dataset --raw datasets/raw --out datasets/v1.npz
+
 This is the leakage-critical core of the project. Every published number
 flows through here, so the rules are enforced in code, not convention:
 
@@ -16,9 +19,10 @@ only.
 
 from __future__ import annotations
 
+import argparse
 import json
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterator
 
@@ -65,6 +69,7 @@ class HarDataset:
     sessions: np.ndarray      # (n,) str
     environments: np.ndarray  # (n,) str
     label_names: tuple[str, ...] = field(default=LABEL_NAMES)
+    provenance: str = ""      # JSON from the assembly CLI; "" if unknown
 
     def __post_init__(self) -> None:
         if self.X.ndim != 4:
@@ -265,10 +270,15 @@ def assemble_dataset(raw_dir: Path, cfg: PreprocessConfig) -> HarDataset:
 # ------------------------------------------------------------- persistence
 
 
-def save_dataset(ds: HarDataset, path: Path) -> Path:
-    """Save as compressed npz (strings as fixed-width unicode, npz-safe)."""
+def save_dataset(ds: HarDataset, path: Path, provenance: str = "") -> Path:
+    """Save as compressed npz (strings as fixed-width unicode, npz-safe).
+
+    ``provenance`` (JSON text: preprocessing config, git SHA) is stored as
+    the ``provenance`` entry so a dataset file says how it was built.
+    """
     np.savez_compressed(
         path,
+        provenance=np.array(provenance or ds.provenance),
         X=ds.X,
         y=ds.y,
         subjects=np.asarray(ds.subjects, dtype=str),
@@ -289,6 +299,7 @@ def load_dataset(path: Path) -> HarDataset:
             sessions=z["sessions"].astype(str),
             environments=z["environments"].astype(str),
             label_names=tuple(str(name) for name in z["label_names"]),
+            provenance=str(z["provenance"]) if "provenance" in z.files else "",
         )
 
 
@@ -471,3 +482,45 @@ def iter_cross_subject(
     for subject in sorted(set(ds.subjects.tolist())):
         train_idx, test_idx = split_cross_subject(ds, subject)
         yield subject, train_idx, test_idx
+
+
+# --------------------------------------------------------------------- CLI
+
+
+def main(argv: list[str] | None = None) -> None:
+    from .evaluate import git_sha
+
+    defaults = PreprocessConfig()
+    ap = argparse.ArgumentParser(
+        prog="python -m csihar.dataset",
+        description="Assemble raw sessions into a dataset .npz",
+    )
+    ap.add_argument("--raw", type=Path, default=Path("datasets/raw"))
+    ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--window-s", type=float, default=defaults.window_s)
+    ap.add_argument("--hop-s", type=float, default=defaults.hop_s)
+    ap.add_argument(
+        "--detrend-window", type=int, default=defaults.detrend_window,
+        help="moving-mean detrend length in samples (odd). The default 101 "
+        "(1 s) also removes breathing (0.1-0.5 Hz); ~3001 keeps it.",
+    )
+    args = ap.parse_args(argv)
+    cfg = PreprocessConfig(
+        window_s=args.window_s, hop_s=args.hop_s,
+        detrend_window=args.detrend_window,
+    )
+    ds = assemble_dataset(args.raw, cfg)
+    provenance = json.dumps({
+        "preprocess": asdict(cfg),
+        "git_sha": git_sha(),
+        "sessions": sorted(set(ds.sessions.tolist())),
+    }, sort_keys=True)
+    path = save_dataset(ds, args.out, provenance)
+    counts = np.bincount(ds.y, minlength=len(ds.label_names))
+    print(f"{path}: X {ds.X.shape}")
+    for name, n in zip(ds.label_names, counts):
+        print(f"  {name:<12}{n:6d}")
+
+
+if __name__ == "__main__":
+    main()

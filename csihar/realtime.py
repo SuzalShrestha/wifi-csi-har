@@ -172,6 +172,19 @@ class Prediction:
     fall_alert: bool = False
 
 
+def serving_preprocess_config(bundle: ModelBundle) -> PreprocessConfig:
+    """Preprocess live data exactly as the checkpoint's training data was.
+
+    Window length comes from the model's ``n_time`` (the CNN accepts any T via
+    adaptive pooling, so a mismatch would be silently mis-scored); the rest
+    (detrend window, ...) from the dataset provenance saved at training time.
+    Checkpoints without it predate provenance and were trained on defaults.
+    """
+    trained = dict(bundle.config.get("preprocess", {}))
+    trained["window_s"] = int(bundle.config["n_time"]) / PreprocessConfig.fs
+    return PreprocessConfig(**trained)
+
+
 class RealtimeEngine:
     """Streaming accumulator: buffers + prediction history (stateful by design).
 
@@ -274,11 +287,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     bundle = load_checkpoint(args.checkpoint)
-    # Window length must match training: the CNN accepts any T (adaptive
-    # pooling), so a mismatched window would be silently mis-scored.
-    pre_cfg = PreprocessConfig(
-        window_s=int(bundle.config["n_time"]) / PreprocessConfig.fs
-    )
+    pre_cfg = serving_preprocess_config(bundle)
     smoother = SmootherConfig()
     engine = RealtimeEngine(bundle, pre_cfg, smoother)
 
