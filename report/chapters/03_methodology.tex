@@ -147,7 +147,11 @@ The per-receiver chain is:
   \item \textbf{Moving-mean detrend} (window 101 samples $=$ 1\,s at
         100\,Hz). Subtracting the local mean removes the static channel
         component --- the direct path and stationary reflectors --- and any
-        slow thermal drift, leaving the motion-induced variation.
+        slow thermal drift, leaving the motion-induced variation. It is also
+        a high-pass filter that attenuates respiration (0.2--0.33\,Hz) by
+        15--24\,dB, so the window length is evaluated as a preprocessing
+        choice rather than assumed (Chapter~\ref{ch:results} [TODO: link
+        the presence ablation]).
 
   \item \textbf{Uniform resampling} to a 100\,Hz grid. Packet arrivals are
         not uniformly spaced, so the series is interpolated onto a regular
@@ -240,7 +244,11 @@ subject, and at least one half-session in a second room to support a
 cross-environment result.
 
 Falls are collected onto a mattress with a spotter present, alternating
-forward, backward, and sideways directions. This class is expected to remain
+forward, backward, and sideways directions. Each fall is triggered by an
+audible cue whose host timestamp is recorded. Only the window containing the
+expected fall motion after each cue is labelled \emph{falling}. The rest of
+the fall segment (standing, lying on the mattress, getting up) is discarded
+rather than mislabelled. This class is expected to remain
 the scarcest, which is why the training loss is class-weighted and why
 falling recall is reported separately.
 
