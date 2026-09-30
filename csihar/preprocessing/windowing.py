@@ -69,12 +69,19 @@ def make_windows(
     """Cut uniformly-resampled, loss-screened windows from one stream."""
     if len(timestamps) == 0:
         return []
-    t0, t1 = float(np.min(timestamps)), float(np.max(timestamps))
+    # Sort once and hand each window only its bracketing slice. Passing the
+    # whole stream made every window re-sort and copy all of it: 50 s per
+    # receiver for a 25-minute session.
+    order = np.argsort(timestamps)
+    ts, vals = np.asarray(timestamps)[order], np.asarray(values)[order]
+    t0, t1 = float(ts[0]), float(ts[-1])
     windows: list[Window] = []
     start = t0
     while start + window_s <= t1:
+        lo = max(int(np.searchsorted(ts, start, "left")) - 1, 0)
+        hi = min(int(np.searchsorted(ts, start + window_s, "right")) + 1, len(ts))
         resampled, loss = resample_uniform(
-            timestamps, values, fs, start, start + window_s
+            ts[lo:hi], vals[lo:hi], fs, start, start + window_s
         )
         if loss <= max_loss:
             windows.append(Window(start_ts=start, values=resampled, loss_fraction=loss))

@@ -3,7 +3,7 @@
 Discipline encoded here, not left to convention:
 
 - normalization statistics are fit on training windows only (validation and
-  test see train-fitted stats — same rule as ``preprocessing.normalize``);
+  test see train-fitted stats);
 - validation is carved from the TRAIN side of the split, stratified, so the
   test set is never touched until the single final evaluation;
 - every run is seeded, appends a provenance row via ``evaluate.append_result``,
@@ -22,17 +22,20 @@ import json
 import os
 import random
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 
 from .dataset import (
     HarDataset,
     load_dataset,
+    label_coverage_note,
+    split_coverage_note,
     split_cross_session,
     split_cross_subject,
     split_random,
@@ -43,6 +46,22 @@ from .models.inference import save_checkpoint
 
 SPLIT_NAMES: tuple[str, ...] = ("random", "cross-session", "cross-subject")
 _DEFAULT_CHUNK_LEN = 25
+
+
+def resolve_device(name: str = "auto") -> torch.device:
+    """Pick a compute device. "auto" prefers CUDA, then Apple MPS, then CPU.
+
+    Training on this project's laptop is CPU-only; the real runs happen on
+    Colab/Kaggle GPUs. Without this the model and its batches stay on the CPU
+    no matter what hardware is attached, and a GPU runtime buys nothing.
+    """
+    if name != "auto":
+        return torch.device(name)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 @dataclass(frozen=True)
@@ -60,6 +79,7 @@ class TrainConfig:
     patience: int = 5
     val_fraction: float = 0.1
     class_weighted: bool = True
+    device: str = "auto"
     results_csv: str = "experiments/results/dl.csv"
     checkpoints_dir: str = "experiments/checkpoints"
     figures_dir: str = "docs/figures"
@@ -76,19 +96,31 @@ class TrainConfig:
 # ------------------------------------------------------------ normalization
 
 
-def norm_fit(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def norm_fit(
+    X: np.ndarray, idx: np.ndarray | None = None, chunk: int = 128
+) -> tuple[np.ndarray, np.ndarray]:
     """Per-(receiver, subcarrier) mean/std over TRAIN windows only.
 
     X: (n, n_rx, T, S) -> mean, std each (n_rx, S) float32. Dead channels
-    (zero std) get std 1.0 so normalization never divides by zero.
+    (zero std) get std 1.0 so normalization never divides by zero. ``idx``
+    selects the train windows; they are read ``chunk`` at a time so a
+    multi-GB dataset is never copied just to take its statistics.
     """
     X = np.asarray(X)
     if X.ndim != 4:
         raise ValueError(f"expected (n, n_rx, T, S), got shape {X.shape}")
-    if X.shape[0] == 0:
+    idx = np.arange(X.shape[0]) if idx is None else np.asarray(idx)
+    if len(idx) == 0:
         raise ValueError("cannot fit normalization on zero windows")
-    mean = X.mean(axis=(0, 2), dtype=np.float64)
-    std = X.std(axis=(0, 2), dtype=np.float64)
+    total = np.zeros((X.shape[1], X.shape[3]))
+    total_sq = np.zeros_like(total)
+    for start in range(0, len(idx), chunk):
+        part = X[idx[start:start + chunk]].astype(np.float64)
+        total += part.sum(axis=(0, 2))
+        total_sq += np.square(part).sum(axis=(0, 2))
+    count = len(idx) * X.shape[2]
+    mean = total / count
+    std = np.sqrt(np.maximum(total_sq / count - mean**2, 0.0))
     std = np.where(std < 1e-8, 1.0, std)
     return mean.astype(np.float32), std.astype(np.float32)
 
@@ -216,33 +248,56 @@ def _seed_everything(seed: int) -> None:
 
 
 def _make_loader(
-    X: np.ndarray, y: np.ndarray, batch_size: int, *, shuffle: bool, seed: int
+    X: np.ndarray,
+    y: np.ndarray,
+    idx: np.ndarray,
+    mean: np.ndarray,
+    std: np.ndarray,
+    batch_size: int,
+    *,
+    shuffle: bool,
+    seed: int,
 ) -> DataLoader:
-    dataset = TensorDataset(
-        torch.from_numpy(np.ascontiguousarray(X, dtype=np.float32)),
-        torch.from_numpy(np.ascontiguousarray(y, dtype=np.int64)),
-    )
+    """Batches of X[idx], normalized per batch.
+
+    Normalizing up front held a float32 copy of every split next to X; at the
+    M3 target (25k windows, 4.7 GB) that is ~3x the dataset and OOMs Colab.
+    """
+    idx = np.asarray(idx)
+
+    def collate(positions: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+        rows = idx[positions]
+        return (
+            torch.from_numpy(norm_apply(X[rows], mean, std)),
+            torch.from_numpy(np.asarray(y[rows], dtype=np.int64)),
+        )
+
     generator = torch.Generator()
     generator.manual_seed(seed)
     # A stray size-1 last batch breaks BatchNorm in train mode; drop it only
     # when a full batch remains, so tiny smoke datasets still train.
-    drop_last = shuffle and len(dataset) > batch_size and len(dataset) % batch_size == 1
+    drop_last = shuffle and len(idx) > batch_size and len(idx) % batch_size == 1
     return DataLoader(
-        dataset,
+        range(len(idx)),
         batch_size=batch_size,
         shuffle=shuffle,
         generator=generator,
         drop_last=drop_last,
         num_workers=0,
+        collate_fn=collate,
     )
 
 
-def _predict_classes(model: nn.Module, loader: DataLoader) -> np.ndarray:
+def _predict_classes(
+    model: nn.Module, loader: DataLoader, device: torch.device | None = None
+) -> np.ndarray:
+    device = device or torch.device("cpu")
     model.eval()
     preds: list[np.ndarray] = []
     with torch.no_grad():
         for xb, _ in loader:
-            preds.append(model(xb).argmax(dim=1).numpy())
+            out = model(xb.to(device)).argmax(dim=1)
+            preds.append(out.cpu().numpy())
     return np.concatenate(preds) if preds else np.empty(0, dtype=np.int64)
 
 
@@ -251,10 +306,13 @@ def _train_one_epoch(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     criterion: nn.Module,
+    device: torch.device | None = None,
 ) -> float:
+    device = device or torch.device("cpu")
     model.train()
     total_loss, total_n = 0.0, 0
     for xb, yb in loader:
+        xb, yb = xb.to(device), yb.to(device)
         optimizer.zero_grad()
         loss = criterion(model(xb), yb)
         loss.backward()
@@ -282,6 +340,13 @@ def _model_config(cfg: TrainConfig, X: np.ndarray, n_classes: int) -> dict:
     return config
 
 
+def _trained_preprocess(ds: HarDataset) -> dict:
+    """{"preprocess": cfg dict} from the dataset's provenance, or {}."""
+    if not ds.provenance:
+        return {}
+    return {"preprocess": json.loads(ds.provenance)["preprocess"]}
+
+
 def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
     """Train per cfg, evaluate ONCE on test, persist checkpoint + results row.
 
@@ -293,6 +358,12 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
         raise ValueError("epochs must be >= 1")
     torch.set_num_threads(max(1, (os.cpu_count() or 2) // 2))
     _seed_everything(cfg.seed)
+    device = resolve_device(cfg.device)
+    print(f"device: {device}")
+    # Results rows must say which device ran, not "auto" - CPU and MPS give
+    # different accuracy on identical data and seeds, so an unresolved
+    # config column makes the row uncomparable to any other row.
+    cfg = replace(cfg, device=str(device))
 
     train_idx, test_idx, split_desc = _resolve_split(ds, cfg)
     y_train = ds.y[train_idx]
@@ -311,37 +382,32 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
         val_idx = fit_idx
 
     # Train-only normalization stats; val/test are transformed, never fitted.
-    mean, std = norm_fit(ds.X[fit_idx])
-    X_fit = norm_apply(ds.X[fit_idx], mean, std)
-    X_val = norm_apply(ds.X[val_idx], mean, std)
-    X_test = norm_apply(ds.X[test_idx], mean, std)
-
-    train_loader = _make_loader(
-        X_fit, ds.y[fit_idx], cfg.batch_size, shuffle=True, seed=cfg.seed
-    )
-    val_loader = _make_loader(
-        X_val, ds.y[val_idx], cfg.batch_size, shuffle=False, seed=cfg.seed
-    )
-    test_loader = _make_loader(
-        X_test, ds.y[test_idx], cfg.batch_size, shuffle=False, seed=cfg.seed
-    )
+    mean, std = norm_fit(ds.X, fit_idx)
+    loader = partial(_make_loader, ds.X, ds.y, mean=mean, std=std,
+                     batch_size=cfg.batch_size, seed=cfg.seed)
+    train_loader = loader(fit_idx, shuffle=True)
+    val_loader = loader(val_idx, shuffle=False)
+    test_loader = loader(test_idx, shuffle=False)
 
     n_classes = len(ds.label_names)
     model_config = _model_config(cfg, ds.X, n_classes)
-    model = build_model(cfg.model, **model_config)
+    model = build_model(cfg.model, **model_config).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
     )
+    weights = _class_weights(ds.y[fit_idx], n_classes) if cfg.class_weighted else None
     criterion = nn.CrossEntropyLoss(
-        weight=_class_weights(ds.y[fit_idx], n_classes) if cfg.class_weighted else None
+        weight=None if weights is None else weights.to(device)
     )
 
     best_f1 = -1.0
     best_state = copy.deepcopy(model.state_dict())
     epochs_since_best = 0
     for epoch in range(1, cfg.epochs + 1):
-        train_loss = _train_one_epoch(model, train_loader, optimizer, criterion)
-        val_pred = _predict_classes(model, val_loader)
+        train_loss = _train_one_epoch(
+            model, train_loader, optimizer, criterion, device
+        )
+        val_pred = _predict_classes(model, val_loader, device)
         val_f1 = compute_metrics(ds.y[val_idx], val_pred, ds.label_names).macro_f1
         print(
             f"epoch {epoch:3d}/{cfg.epochs}  "
@@ -358,9 +424,24 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
                 break
 
     model.load_state_dict(best_state)
-    test_pred = _predict_classes(model, test_loader)
+    test_pred = _predict_classes(model, test_loader, device)
     report = compute_metrics(ds.y[test_idx], test_pred, ds.label_names)
 
+    coverage = split_coverage_note(ds, train_idx, test_idx)
+    if coverage:
+        warnings.warn(f"{coverage} - this run's metrics are uninterpretable")
+    # Separate severity: an unpopulated class does not invalidate the run, it
+    # lowers the best macro-F1 the run could possibly reach.
+    ceiling = label_coverage_note(ds)
+    if ceiling:
+        warnings.warn(
+            f"{ceiling} - macro-F1 is not comparable to runs where every "
+            "class has data"
+        )
+
+    # Checkpoints must load on any machine — the realtime engine and the
+    # dashboard run on the laptop's CPU, not wherever training happened.
+    model = model.to("cpu")
     checkpoint_path = save_checkpoint(
         Path(cfg.checkpoints_dir) / _checkpoint_name(cfg),
         model=model,
@@ -368,7 +449,9 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
         label_names=ds.label_names,
         norm_mean=mean,
         norm_std=std,
-        config=model_config,
+        # Serving must preprocess exactly as training did (detrend window,
+        # etc.); realtime/dashboard read this back.
+        config={**model_config, **_trained_preprocess(ds)},
     )
     append_result(
         Path(cfg.results_csv),
@@ -379,7 +462,9 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
         report=report,
         n_train=len(train_idx),
         n_test=len(test_idx),
-        notes=cfg.notes,
+        notes="; ".join(
+            part for part in (cfg.notes, coverage, ceiling) if part
+        ),
     )
     figure_path = Path(cfg.figures_dir) / (
         f"cm_{cfg.model}_{split_desc.replace(':', '_')}.png"
@@ -420,6 +505,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
     parser.add_argument("--lr", type=float, default=TrainConfig.lr)
     parser.add_argument("--seed", type=int, default=TrainConfig.seed)
+    parser.add_argument(
+        "--device", default=TrainConfig.device,
+        help='"auto" (cuda > mps > cpu), or an explicit torch device such as '
+        '"cuda", "mps", "cpu"',
+    )
     return parser
 
 
@@ -433,6 +523,7 @@ def main(argv: list[str] | None = None) -> None:
         batch_size=args.batch_size,
         lr=args.lr,
         seed=args.seed,
+        device=args.device,
     )
     ds = load_dataset(Path(args.data))
     train_model(ds, cfg)

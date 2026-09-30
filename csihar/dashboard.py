@@ -267,12 +267,11 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
     from .models.inference import load_checkpoint
-    from .preprocessing import PreprocessConfig
-    from .realtime import RealtimeEngine, SmootherConfig
+    from .realtime import RealtimeEngine, SmootherConfig, serving_preprocess_config
 
     args = _build_arg_parser().parse_args(argv)
     bundle = load_checkpoint(args.checkpoint)
-    pre_cfg = PreprocessConfig()
+    pre_cfg = serving_preprocess_config(bundle)
     smoother = SmootherConfig()
     engine = RealtimeEngine(bundle, pre_cfg, smoother)
 

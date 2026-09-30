@@ -29,7 +29,7 @@ the defense numbers survive scrutiny — do not relax them for convenience.
 | cross-session | hold out entire sessions (all subjects present in both sides) | honest same-people number |
 | cross-subject | leave-one-subject-out, average over folds | the generalization headline; expect a drop |
 
-Leakage rules: `fit_scaler` on the train side only, per split. Windows from
+Leakage rules: `train.norm_fit` on the train side only, per split. Windows from
 one session never straddle a split boundary. Augmentation parameters derived
 from train only.
 

@@ -53,16 +53,22 @@ def smooth_predictions(
 ) -> str:
     """Majority label over the last ``vote_k`` (raw_label, confidence) pairs.
 
-    Entries with confidence below ``cfg.min_confidence`` count as "unknown".
+    Entries below ``cfg.min_confidence`` ABSTAIN: they are dropped from the
+    vote rather than voting for "unknown". Letting them vote as a label meant
+    two uncertain windows could veto three confident ones, and measured on the
+    pilot session that made the smoother strictly worse than no smoothing at
+    all - same 29 label changes as the raw stream, but accuracy 0.856 vs
+    0.918, with 10% of outputs "unknown". Abstaining gives 0.905 and 19
+    changes. Only when NO recent entry is confident does this say "unknown".
+
     Ties break toward the most recent tied label. Empty history -> "unknown".
     """
     if not history:
         return "unknown"
     recent = history[-cfg.vote_k :]
-    votes = [
-        label if conf >= cfg.min_confidence else "unknown"
-        for label, conf in recent
-    ]
+    votes = [label for label, conf in recent if conf >= cfg.min_confidence]
+    if not votes:
+        return "unknown"
     counts = Counter(votes)
     best_count = max(counts.values())
     tied = {label for label, c in counts.items() if c == best_count}
@@ -164,6 +170,19 @@ class Prediction:
     # A fall is a transient (1-2 windows): it can lose every majority vote,
     # so the safety-critical alert bypasses smoothing on a confident raw hit.
     fall_alert: bool = False
+
+
+def serving_preprocess_config(bundle: ModelBundle) -> PreprocessConfig:
+    """Preprocess live data exactly as the checkpoint's training data was.
+
+    Window length comes from the model's ``n_time`` (the CNN accepts any T via
+    adaptive pooling, so a mismatch would be silently mis-scored); the rest
+    (detrend window, ...) from the dataset provenance saved at training time.
+    Checkpoints without it predate provenance and were trained on defaults.
+    """
+    trained = dict(bundle.config.get("preprocess", {}))
+    trained["window_s"] = int(bundle.config["n_time"]) / PreprocessConfig.fs
+    return PreprocessConfig(**trained)
 
 
 class RealtimeEngine:
@@ -268,11 +287,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     bundle = load_checkpoint(args.checkpoint)
-    # Window length must match training: the CNN accepts any T (adaptive
-    # pooling), so a mismatched window would be silently mis-scored.
-    pre_cfg = PreprocessConfig(
-        window_s=int(bundle.config["n_time"]) / PreprocessConfig.fs
-    )
+    pre_cfg = serving_preprocess_config(bundle)
     smoother = SmootherConfig()
     engine = RealtimeEngine(bundle, pre_cfg, smoother)
 

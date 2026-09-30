@@ -23,6 +23,7 @@ from .dataset import (
     HarDataset,
     iter_cross_subject,
     load_dataset,
+    label_coverage_note,
     split_coverage_note,
     split_cross_session,
     split_random,
@@ -60,11 +61,38 @@ def _score_fold(
     coverage = split_coverage_note(ds, train_idx, test_idx)
     if coverage:
         warnings.warn(f"{coverage} - this fold's metrics are uninterpretable")
+    ceiling = label_coverage_note(ds)
+    if ceiling:
+        warnings.warn(
+            f"{ceiling} - macro-F1 is not comparable to runs where every "
+            "class has data"
+        )
     model.fit(features[train_idx], ds.y[train_idx])
     y_pred = model.predict(features[test_idx])
     y_true = ds.y[test_idx]
     report = compute_metrics(y_true, y_pred, ds.label_names)
     return y_true, y_pred, report
+
+
+def _result_notes(
+    ds: HarDataset,
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    *extra: str,
+) -> str:
+    """Every caveat this row needs, joined for the results CSV's notes column.
+
+    Both guards belong on every row: a degenerate split makes the metric
+    uninterpretable, an unpopulated class caps it. A row carrying neither is
+    a row whose macro-F1 can be read at face value.
+    """
+    return "; ".join(
+        part for part in (
+            *extra,
+            split_coverage_note(ds, train_idx, test_idx),
+            label_coverage_note(ds),
+        ) if part
+    )
 
 
 def run_baseline(
@@ -99,7 +127,7 @@ def run_baseline(
                 results_csv, model=name, split="random", seed=seed,
                 config="baseline", report=report,
                 n_train=len(train_idx), n_test=len(test_idx),
-                notes=split_coverage_note(ds, train_idx, test_idx),
+                notes=_result_notes(ds, train_idx, test_idx),
             )
             save_confusion_matrix(
                 y_true, y_pred, ds.label_names,
@@ -118,7 +146,7 @@ def run_baseline(
                 results_csv, model=name, split="cross-session", seed=seed,
                 config="baseline", report=report,
                 n_train=len(train_idx), n_test=len(test_idx),
-                notes=split_coverage_note(ds, train_idx, test_idx),
+                notes=_result_notes(ds, train_idx, test_idx),
             )
             save_confusion_matrix(
                 y_true, y_pred, ds.label_names,
@@ -140,11 +168,8 @@ def run_baseline(
                     results_csv, model=name, split="cross-subject", seed=seed,
                     config="baseline", report=report,
                     n_train=len(train_idx), n_test=len(test_idx),
-                    notes="; ".join(
-                        part for part in (
-                            f"fold={subject}",
-                            split_coverage_note(ds, train_idx, test_idx),
-                        ) if part
+                    notes=_result_notes(
+                        ds, train_idx, test_idx, f"fold={subject}"
                     ),
                 )
                 rows.append((name, f"cross-subject:{subject}", report))

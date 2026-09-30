@@ -21,6 +21,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 import numpy as np
@@ -45,11 +46,18 @@ def parse_notes(notes: str) -> dict[str, str]:
     """``"ablation=rate variant=50Hz"`` -> ``{"ablation": ..., "variant": ...}``.
 
     Tokens without ``=`` are ignored; empty/NaN notes give an empty dict.
+
+    Splits on ``;`` as well as whitespace: ``train`` joins the run's own notes
+    with a degenerate-split coverage warning using ``"; "``, so the last
+    structured token arrives as ``variant=25Hz;``. Splitting on whitespace
+    alone left the semicolon glued to the value, which crashed
+    ``variant_value`` on window/rate rows and silently split the receivers
+    series in two.
     """
     if not isinstance(notes, str) or not notes.strip():
         return {}
     out: dict[str, str] = {}
-    for token in notes.split():
+    for token in re.split(r"[;\s]+", notes):
         key, sep, value = token.partition("=")
         if sep and key and value:
             out[key] = value

@@ -12,6 +12,7 @@ from csihar.dataset import (
     iter_cross_subject,
     load_dataset,
     save_dataset,
+    label_coverage_note,
     split_coverage_note,
     split_cross_environment,
     split_cross_session,
@@ -353,3 +354,104 @@ def test_split_coverage_note_flags_classes_missing_from_train():
     note = split_coverage_note(ds, np.array([0, 1]), np.array([2, 3]))
     assert "train missing 1 class(es): walking" in note
     assert "test missing 1 class(es): background" in note
+
+
+# ------------------------------------------------- macro-F1 ceiling guard
+
+
+def tiny_ds(y: list[int], label_names: tuple[str, ...]) -> HarDataset:
+    """Minimal dataset with a chosen label vocabulary and class population."""
+    n = len(y)
+    tag = np.array(["a"] * n)
+    return HarDataset(
+        X=np.zeros((n, 1, 8, 4), np.float32),
+        y=np.asarray(y, dtype=np.int64),
+        subjects=tag, sessions=tag, environments=tag,
+        label_names=label_names,
+    )
+
+
+def test_label_coverage_note_is_empty_when_every_class_has_data():
+    assert label_coverage_note(tiny_ds([0, 1, 0, 1], ("a", "b"))) == ""
+
+
+def test_label_coverage_note_reports_the_macro_f1_ceiling():
+    """A class in the vocabulary with no windows scores F1 = 0 and no model
+    can avoid it, so it caps macro-F1 at n_present / n_classes.
+
+    On the pilot data (6 classes, `falling` uncollected) a PERFECT classifier
+    scores 0.8333. Without this note the baseline's 0.8261 reads as a
+    mediocre result rather than 99% of the achievable ceiling.
+    """
+    note = label_coverage_note(tiny_ds([0, 0, 0], ("a", "b", "c")))
+    assert note.startswith("MACRO-F1 CAPPED AT 0.3333")
+    assert "b, c" in note
+
+
+def test_label_coverage_note_ceiling_matches_a_perfect_classifier():
+    """The stated ceiling must be what a perfect classifier actually scores,
+    or the note trades one misreading for another."""
+    from csihar.evaluate import compute_metrics
+
+    names = ("a", "b", "c", "d")  # "d" never occurs
+    y = [0, 1, 2] * 4
+    note = label_coverage_note(tiny_ds(y, names))
+    stated = float(note.split("CAPPED AT ")[1].split(" -")[0])
+    perfect = compute_metrics(np.array(y), np.array(y), names).macro_f1
+    assert stated == pytest.approx(perfect)
+
+
+def test_label_coverage_note_sees_what_split_coverage_note_cannot():
+    """An unpopulated class is absent from BOTH sides, so the train-vs-test
+    comparison finds nothing wrong -- yet macro-F1 is still capped. That gap
+    is why this guard exists separately."""
+    ds = tiny_ds([0, 1] * 6, ("a", "b", "c"))  # "c" absent everywhere
+    train_idx, test_idx = split_random(ds, test_fraction=0.5, seed=0)
+    assert split_coverage_note(ds, train_idx, test_idx) == ""
+    assert label_coverage_note(ds).startswith("MACRO-F1 CAPPED AT 0.6667")
+
+
+# ------------------------------------------------------------ fall events
+
+
+FALL = LABEL_NAMES.index("falling")
+
+
+def test_falling_is_labelled_only_around_each_cue(tmp_path):
+    session = write_session(tmp_path, label="walking", subject="s1",
+                            duration_s=12.0, seed=5)
+    t0 = first_window_start(session)
+    # Cue at t0+3.7 -> motion [t0+4.2, t0+5.7]; windows start t0+1.5k, so only
+    # k=2 (t0+3.0 .. t0+6.0) holds all of it. The rest of the falling span is
+    # standing/lying/getting up and must be dropped, not labelled falling.
+    (session / "labels.json").write_text(json.dumps({
+        "segments": [{"label": "falling", "start_ts": t0 - 1.0, "end_ts": t0 + 20.0}],
+        "events": [{"label": "falling", "ts": t0 + 3.7}],
+    }))
+    part = assemble_session(session, CFG)
+    assert part.y.tolist() == [FALL]
+
+
+def test_falling_without_cues_yields_no_windows_and_warns(tmp_path):
+    session = write_session(tmp_path, label="walking", subject="s1",
+                            duration_s=8.0, seed=6)
+    t0 = first_window_start(session)
+    write_labels(session, [
+        {"label": "falling", "start_ts": t0 - 1.0, "end_ts": t0 + 20.0},
+    ])
+    with pytest.warns(UserWarning, match="without fall cues"):
+        part = assemble_session(session, CFG)
+    assert part.X.shape[0] == 0
+
+
+def test_cli_writes_dataset_with_provenance(raw_dir, tmp_path):
+    from csihar.dataset import main
+
+    out = tmp_path / "ds.npz"
+    main(["--raw", str(raw_dir), "--out", str(out), "--detrend-window", "51"])
+    ds = load_dataset(out)
+    assert ds.X.shape[0] > 0
+    with np.load(out) as z:
+        prov = json.loads(str(z["provenance"]))
+    assert prov["preprocess"]["detrend_window"] == 51
+    assert len(prov["sessions"]) == 4

@@ -303,3 +303,24 @@ def test_cli_forwards_lead_in(tmp_path, monkeypatch):
         ]
     )
     assert calls["lead_in_s"] == 15.0
+
+
+def test_cue_falls_spaces_cues_and_leaves_room_for_the_last_fall(monkeypatch):
+    monkeypatch.setattr(session_script.time, "sleep", lambda _s: None)
+    clock = _FakeClock(start=0.0, step=0.05)
+    start = clock.t
+    cues = session_script._cue_falls(60.0, 15.0, clock)
+    assert len(cues) == 3
+    gaps = [b - a for a, b in zip(cues, cues[1:])]
+    assert all(abs(g - 15.0) < 0.5 for g in gaps)
+    assert cues[-1] <= start + 60.0 - session_script._FALL_TAIL_S
+    assert clock.t >= start + 60.0  # the whole segment was waited out
+
+
+def test_labels_json_carries_fall_events():
+    timed = (TimedSegment(label="falling", start_ts=0.0, end_ts=60.0),)
+    result = segments_to_labels_json(timed, (15.0, 30.0))
+    assert result["events"] == [
+        {"label": "falling", "ts": 15.0}, {"label": "falling", "ts": 30.0},
+    ]
+    assert "events" not in segments_to_labels_json(timed)

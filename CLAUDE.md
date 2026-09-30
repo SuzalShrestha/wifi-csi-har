@@ -11,10 +11,11 @@ tested on simulated data — parser -> collector -> preprocessing ->
 dataset/splits -> baseline + CNN/CNN-LSTM training -> ablation runner
 (csihar/experiments.py) -> realtime engine -> web dashboard
 (csihar/dashboard.py) -> figures pipeline (csihar/figures.py) + LaTeX report
-skeleton (report/). Everything remaining is hardware/data work: flash boards
-(/flash-firmware), confirm subcarrier nulls on real captures, collect the
-pilot dataset (/collect-session), rerun training/ablations on real data,
-measure real-time latency, then write the report chapters.
+skeleton (report/). Hardware bring-up, null confirmation, latency and pilot
+session 1 are done. Everything remaining is data-gated: pilot session 2
+(+ first cued falls), the full M3 collection (/collect-session), then
+training/ablations on real data and the results chapters. Live checklist:
+[docs/COMPLETION_GUIDE.md](docs/COMPLETION_GUIDE.md).
 
 ## Commands
 
@@ -26,15 +27,25 @@ measure real-time latency, then write the report chapters.
 .venv/bin/python -m csihar.preflight --help         # verify the rig BEFORE recording
 .venv/bin/python -m csihar.collector --help         # record a session
 .venv/bin/python -m csihar.datasheet datasets/raw    # collection progress vs M3 targets
+.venv/bin/python -m csihar.dataset --out ds.npz      # raw sessions -> dataset .npz (+provenance)
 .venv/bin/python -m csihar.experiments --help       # Phase 4 ablations
 .venv/bin/python -m csihar.dashboard --help         # Phase 5 demo dashboard
 .venv/bin/python -m csihar.latency --help           # pipeline latency benchmark
+.venv/bin/python -m csihar.ondevice --per-layer      # ESP32-S3 deployment budget
 make figures                                        # regenerate report figures
 make report                                         # build LaTeX report (needs TeX)
 ```
 
-Python 3.14 venv at `.venv/`. No GPU on this machine — heavy training happens
-on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
+Python 3.14 venv at `.venv/`. No CUDA GPU on this machine, but **Apple MPS
+works and is ~2.5x faster than CPU** (`--device auto` picks cuda > mps > cpu).
+Heavy training goes to Colab via `notebooks/train_colab.ipynb`; keep model
+code runnable on CPU for smoke tests.
+
+**Results are not reproducible across devices.** The same seed on CPU and MPS
+gave test accuracy 0.903 vs 0.929 on identical data; the same CNN on a Colab
+T4 gave 0.937. The *resolved* device (not `"auto"`) is written into the
+results CSV's config column — pin it when reporting a number, and never
+compare rows trained on different devices.
 
 ## Repo map
 
@@ -51,8 +62,7 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
 - `csihar/traffic.py` — UDP downlink generator; `downlink_traffic()` context
   manager and `add_traffic_argument()` are the shared wiring every live
   entry point uses.
-- `csihar/preprocessing/` — pure functions: subcarriers, filters, windowing,
-  normalize.
+- `csihar/preprocessing/` — pure functions: subcarriers, filters, windowing.
 - `csihar/simulate.py` — synthetic CSI in byte-exact firmware format; use it
   to develop/test anything downstream without hardware.
 - `csihar/storage.py` — Parquet + metadata.json session layout. Set
@@ -65,6 +75,9 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
 - `csihar/latency.py` — per-stage latency benchmark (parse/ingest/window/
   inference) over a simulated or replayed session; runs against an untrained
   model since latency is weight-independent.
+- `csihar/ondevice.py` — ESP32-S3 memory/compute budget for the Phase 5
+  on-device stretch goal, traced from the model's own layer shapes. Findings
+  in `docs/ondevice_feasibility.md`.
 - `docs/collection_protocol.md` — data collection rules; fill blanks, don't
   drift from it silently.
 - `docs/research_review.md` — 2026-07-16 literature audit: what was fixed
@@ -120,11 +133,54 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
   ~85% of that; inference is ~3 ms; parse and ingest are ~0.02 ms per frame.
   End-to-end delay is dominated by the 3 s of buffering a window needs. To cut
   latency, shorten `window_s` — optimizing code will not move it.
+- **The streaming engine scores ~5 points below the offline pipeline on the
+  same windows, and that gap is structural.** Measured 2026-08-28 replaying
+  `20260827_232655_sujal_scripted`: offline 0.9177, realtime raw 0.8671, 96%
+  window-for-window prediction agreement. Cause: `detrend_moving_mean` is a
+  **centered** 101-tap kernel, so offline every interior sample sees 0.5 s of
+  *future* data. `_slice_window` grabs 0.5 s of lead-in but cannot grab
+  trailing context — that is the future. Error is ~0.0001 mid-window and
+  0.91 in the last 0.5 s. Closing it would cost 0.5 s of added latency; we
+  have the headroom, but it buys ~5 points, so it is a deliberate trade, not
+  a bug. Do not "fix" `_slice_window` expecting a large win.
+- **Smoothed accuracy is LOWER than raw — report raw.** End-to-end 0.8025
+  smoothed vs 0.8671 raw. Majority voting helps only against independent
+  noise; these errors cluster. The smoother earns its place on display
+  stability (29 label changes -> 19 over 20 min, against 3 real ones), not
+  accuracy. The dashboard streams both labels; quote the raw number.
+- **A confidence threshold must abstain, not vote.** `smooth_predictions`
+  used to map low-confidence windows to the literal label `"unknown"`, which
+  then competed in the majority vote — two unsure windows could veto three
+  confident ones. That made the smoother strictly dominated: identical
+  flicker to raw and 6 points worse. Low-confidence entries now drop out of
+  the vote; `"unknown"` is returned only when nothing recent is confident.
+- **Falls are labelled per cued event, never per segment** (2026-09-30).
+  A falling segment is ~90% standing/lying/getting up between falls.
+  `session_script` cues each fall and writes cue times to `labels.json`
+  `events`; assembly keeps only windows containing `[cue+0.5, cue+2.0]` s.
+  Record falls only via `session_script --script "falling:300"`.
+- **The default 1 s detrend removes breathing** (−20 dB at 0.25 Hz,
+  measured). Breathing is the only cue separating a motionless person from
+  an empty room, which explains pilot 1's background/standing collapse.
+  `--detrend-window 3001` keeps it. Checkpoints carry their preprocessing,
+  and serving uses `realtime.serving_preprocess_config`: never build a
+  `PreprocessConfig()` by hand for a trained model.
 - **Amplitude only.** Single antenna → raw phase is CFO/SFO-corrupted;
   multi-antenna phase sanitization is impossible on this hardware. Don't
   build phase features into the main pipeline.
 - Receivers have independent clocks: align at **window level** via host
   timestamps, never per-packet.
+- **The results `notes` column carries both structured tokens and free text**,
+  joined with `"; "` — `train` appends the degenerate-split coverage warning
+  to whatever notes the caller set. `figures.parse_notes` therefore splits on
+  `;` as well as whitespace; splitting on whitespace alone left the semicolon
+  glued to the value (`variant=25Hz;`), which made `make figures` raise on
+  window/rate ablation rows and silently split the receivers series in two.
+  Anything else that parses `notes` must do the same.
+- **On-device inference is single-receiver by construction** — a board holds
+  only its own CSI. Memory is not the obstacle (int8 weights are ~236 KB
+  against 16 MB flash); the ~609 KB activation arena is, and it sits entirely
+  in the first conv block. See `docs/ondevice_feasibility.md`.
 - NumPy 2.x: `np.fromstring` is gone (already hit this once).
 
 ## Non-negotiable evaluation rules (defense depends on these)
@@ -133,10 +189,32 @@ on Colab/Kaggle; keep model code runnable on CPU for smoke tests.
    cross-session, cross-subject (leave-one-subject-out). Never quote a
    random-split number alone — temporal leakage inflates it.
 2. Scalers/augmentation statistics fit on **train split only**
-   (`fit_scaler` enforces the shape; you enforce the discipline).
+   (`train.norm_fit` takes the train indices; you enforce the discipline).
 3. Falling is safety-critical: always report its recall separately.
 4. Every experiment: fixed seed, config committed, results CSV under
    `experiments/`. Figures regenerate from scripts — no hand-made plots.
+   Seed alone does not pin a run: the device does too (see above).
+5. **A high accuracy with a macro-F1 near 1/n_classes is a degenerate
+   split, not a result** — Colab reported cross-session 0.9749 accuracy /
+   0.1645 macro-F1 on a test session holding only `background`. Both
+   `baseline` and `train` now call `split_coverage_note` and write it into
+   the CSV's `notes`; a cross-* row with an empty `notes` predates that fix.
+   The checkpoint from such a run is still usable — only the metric is void.
+6. **An uncollected class caps macro-F1 below 1.0.** `compute_metrics`
+   averages F1 over the whole label vocabulary, so a class with no windows
+   anywhere scores F1 = 0 and no model can avoid it. With `falling`
+   uncollected, a *perfect* classifier on the pilot data scores macro-F1
+   **0.8333**, not 1.0 — SVM's 0.8261 is 99% of ceiling, not a mediocre
+   result, and no pilot macro-F1 is comparable to a later one where
+   `falling` exists. `dataset.label_coverage_note` detects this and both
+   `train` and `baseline` write it into the CSV's `notes`. This is *not*
+   what rule 5 catches: `split_coverage_note` compares train against test,
+   and an unpopulated class is missing from both.
+7. A split whose test set is missing classes the train set has is
+   **degenerate, not bad** — its accuracy is uninterpretable.
+   `dataset.split_coverage_note` detects this, `baseline` warns and writes
+   the reason into the results CSV. Cross-session needs activities in >= 2
+   sessions; cross-subject needs >= 2 subjects.
 
 ## Conventions
 

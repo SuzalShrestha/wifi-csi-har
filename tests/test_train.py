@@ -1,10 +1,13 @@
 import csv
 import json
+from dataclasses import replace
+from unittest import mock
 
 import numpy as np
 import pytest
 import torch
 
+from csihar import train as train_module
 from csihar.dataset import LABEL_NAMES, assemble_dataset
 from csihar.models import build_model
 from csihar.models.inference import (
@@ -21,6 +24,7 @@ from csihar.train import (
     _grouped_val_split,
     norm_apply,
     norm_fit,
+    resolve_device,
     train_model,
 )
 
@@ -242,7 +246,11 @@ def test_train_model_smoke(sim_dataset, tmp_path):
     assert rows[0]["split"] == "random"
     assert rows[0]["seed"] == "0"
     assert float(rows[0]["accuracy"]) == pytest.approx(report.accuracy, abs=1e-3)
-    assert TrainConfig.from_json(rows[0]["config"]) == cfg
+    # Config round-trips exactly, except `device`, which is deliberately
+    # rewritten to the device that actually ran (see the resolved-device test).
+    written = TrainConfig.from_json(rows[0]["config"])
+    assert written == replace(cfg, device=written.device)
+    assert written.device == str(resolve_device(cfg.device))
 
     # confusion matrix figure regenerated from code
     assert (tmp_path / "figures" / "cm_cnn_random.png").exists()
@@ -259,3 +267,126 @@ def test_train_model_rejects_unknown_names(sim_dataset):
         train_model(sim_dataset, TrainConfig(model="mlp", epochs=1))
     with pytest.raises(ValueError, match="unknown split"):
         train_model(sim_dataset, TrainConfig(split="temporal", epochs=1))
+
+
+def test_resolve_device_honours_an_explicit_name():
+    assert resolve_device("cpu") == torch.device("cpu")
+
+
+def test_resolve_device_auto_falls_back_to_cpu(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    assert resolve_device("auto") == torch.device("cpu")
+
+
+def test_resolve_device_auto_prefers_cuda(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert resolve_device("auto") == torch.device("cuda")
+
+
+def test_resolve_device_auto_uses_mps_when_no_cuda(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert resolve_device("auto") == torch.device("mps")
+
+
+def test_device_is_part_of_the_committed_config():
+    # Every knob of a run must be reproducible from the logged config.
+    assert "device" in TrainConfig().to_json()
+    assert TrainConfig.from_json(TrainConfig(device="cpu").to_json()).device == "cpu"
+
+
+def test_checkpoint_is_saved_on_cpu(sim_dataset, tmp_path):
+    """A GPU-trained checkpoint has to load on the laptop that runs the demo."""
+    cfg = TrainConfig(
+        epochs=1, batch_size=8, patience=8, device="cpu",
+        results_csv=str(tmp_path / "r.csv"),
+        checkpoints_dir=str(tmp_path / "ckpt"),
+        figures_dir=str(tmp_path / "fig"),
+    )
+    _, path = train_model(sim_dataset, cfg)
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    assert all(t.device.type == "cpu" for t in payload["state_dict"].values())
+
+
+def test_results_row_records_the_resolved_device_not_auto(sim_dataset, tmp_path):
+    """A config column saying "auto" cannot be compared across machines.
+
+    CPU and MPS produce different accuracy on identical data and seeds, so the
+    row has to name the hardware that actually ran, not the request for one.
+    """
+    cfg = TrainConfig(
+        model="cnn", split="random", epochs=1, batch_size=8, patience=1,
+        device="auto",
+        results_csv=str(tmp_path / "results" / "dl.csv"),
+        checkpoints_dir=str(tmp_path / "checkpoints"),
+        figures_dir=str(tmp_path / "figures"),
+    )
+    train_model(sim_dataset, cfg)
+
+    with open(cfg.results_csv, newline="") as fh:
+        row = next(csv.DictReader(fh))
+    recorded = json.loads(row["config"])["device"]
+    assert recorded != "auto"
+    assert recorded == str(resolve_device("auto"))
+
+
+def test_degenerate_split_is_warned_and_written_into_the_results_row(
+    sim_dataset, tmp_path
+):
+    """The DL path needs the same guardrail baseline.py has.
+
+    A cross-session test set holding one class scores ~0.97 accuracy while the
+    model has learned nothing; without the note the CSV looks like a result.
+    """
+    ds = sim_dataset
+    train_idx = np.flatnonzero(ds.y == ds.label_names.index("background"))
+    test_idx = np.flatnonzero(ds.y != ds.label_names.index("background"))
+    assert len(train_idx) and len(test_idx)
+
+    cfg = TrainConfig(
+        model="cnn", split="random", epochs=1, batch_size=8, patience=1,
+        device="cpu", notes="pilot",
+        results_csv=str(tmp_path / "results" / "dl.csv"),
+        checkpoints_dir=str(tmp_path / "checkpoints"),
+        figures_dir=str(tmp_path / "figures"),
+    )
+
+    def _degenerate(dataset, config):
+        return train_idx, test_idx, "cross-session"
+
+    with mock.patch.object(train_module, "_resolve_split", _degenerate):
+        with pytest.warns(UserWarning, match="DEGENERATE SPLIT"):
+            train_model(ds, cfg)
+
+    with open(cfg.results_csv, newline="") as fh:
+        row = next(csv.DictReader(fh))
+    assert "DEGENERATE SPLIT" in row["notes"]
+    assert "pilot" in row["notes"]  # the operator's own note survives
+
+
+def test_checkpoint_carries_training_preprocessing_to_serving(sim_dataset, tmp_path):
+    from dataclasses import asdict
+
+    from csihar.realtime import serving_preprocess_config
+
+    trained = PreprocessConfig(detrend_window=3001)
+    ds = replace(sim_dataset, provenance=json.dumps({"preprocess": asdict(trained)}))
+    cfg = TrainConfig(
+        epochs=1, batch_size=8,
+        results_csv=str(tmp_path / "dl.csv"),
+        checkpoints_dir=str(tmp_path), figures_dir=str(tmp_path),
+    )
+    _, path = train_model(ds, cfg)
+    served = serving_preprocess_config(load_checkpoint(path))
+    assert served.detrend_window == 3001
+    assert served.window_s == pytest.approx(ds.X.shape[2] / served.fs)
+
+
+def test_serving_defaults_when_checkpoint_predates_provenance():
+    from types import SimpleNamespace
+
+    from csihar.realtime import serving_preprocess_config
+
+    served = serving_preprocess_config(SimpleNamespace(config={"n_time": 200}))
+    assert served == PreprocessConfig(window_s=2.0)

@@ -91,3 +91,17 @@ def test_report_marks_a_met_target(tmp_path):
 
 def test_empty_directory_reports_cleanly(tmp_path):
     assert format_report(scan(tmp_path), CFG, Targets()) == "no readable sessions found"
+
+
+def test_falling_windows_are_counted_per_cued_fall(tmp_path):
+    d = _scripted(tmp_path, "20260901_120000_a_scripted", "alice",
+                  [("falling", 300.0)])
+    labels = json.loads((d / "labels.json").read_text())
+    labels["events"] = [{"label": "falling", "ts": 1_700_000_000.0 + t}
+                        for t in (15, 30, 45)]
+    (d / "labels.json").write_text(json.dumps(labels))
+    s = summarize_session(d)
+    assert s.fall_events == 3
+    row = next(l for l in format_report([s], CFG, Targets()).splitlines()
+               if l.startswith("falling"))
+    assert row.split()[-1] == "3"  # not the ~199 a 300 s span would imply

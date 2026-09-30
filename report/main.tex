@@ -31,7 +31,7 @@
       \includegraphics[width=0.85\textwidth]{#1}%
     }{%
       \fbox{\parbox[c][0.35\textwidth][c]{0.8\textwidth}{\centering
-        \texttt{#1}\\[0.5em]not generated yet — run \texttt{make figures}}}%
+        \texttt{\detokenize{#1}}\\[0.5em]not generated yet — run \texttt{make figures}}}%
     }
     \caption{#2}
     \label{#3}

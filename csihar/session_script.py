@@ -46,6 +46,9 @@ VALID_LABELS = frozenset(
 
 _COUNTDOWN_INTERVAL_S = 5.0
 _POLL_INTERVAL_S = 0.1
+# Room after the last cue for the fall itself plus getting up; a cue closer
+# than this to the segment end would yield a fall whose window is cut off.
+_FALL_TAIL_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -93,9 +96,17 @@ def parse_script(spec: str) -> tuple[Segment, ...]:
     return tuple(segments)
 
 
-def segments_to_labels_json(segments_with_times: tuple[TimedSegment, ...]) -> dict:
-    """Build the labels.json dict per the shared contract (pure, testable)."""
-    return {
+def segments_to_labels_json(
+    segments_with_times: tuple[TimedSegment, ...],
+    fall_cues: tuple[float, ...] = (),
+) -> dict:
+    """Build the labels.json dict per the shared contract (pure, testable).
+
+    ``events`` holds the host-clock time of every fall cue. A falling segment
+    is mostly standing, lying on the mattress and getting up between falls;
+    dataset assembly labels only the windows around each cue as ``falling``.
+    """
+    labels = {
         "segments": [
             {
                 "label": s.label,
@@ -105,13 +116,20 @@ def segments_to_labels_json(segments_with_times: tuple[TimedSegment, ...]) -> di
             for s in segments_with_times
         ]
     }
+    if fall_cues:
+        labels["events"] = [{"label": "falling", "ts": ts} for ts in fall_cues]
+    return labels
 
 
 def write_labels_json(
-    session_dir: Path, segments_with_times: tuple[TimedSegment, ...]
+    session_dir: Path,
+    segments_with_times: tuple[TimedSegment, ...],
+    fall_cues: tuple[float, ...] = (),
 ) -> Path:
     path = session_dir / "labels.json"
-    path.write_text(json.dumps(segments_to_labels_json(segments_with_times), indent=2))
+    path.write_text(
+        json.dumps(segments_to_labels_json(segments_with_times, fall_cues), indent=2)
+    )
     return path
 
 
@@ -136,6 +154,24 @@ def _wait_segment(duration_s: float, label: str, clock: Callable[[], float]) -> 
         time.sleep(min(_POLL_INTERVAL_S, max(remaining, 0)))
 
 
+def _cue_falls(
+    duration_s: float, interval_s: float, clock: Callable[[], float]
+) -> list[float]:
+    """Wait out a falling segment, cueing one fall every ``interval_s``.
+
+    Returns the host-clock time of each cue. The subject falls on the cue, so
+    labels come from these times rather than from the whole segment.
+    """
+    start = clock()
+    cues: list[float] = []
+    while clock() - start + interval_s + _FALL_TAIL_S <= duration_s:
+        _wait_segment(interval_s, "falling: next cue in", clock)
+        cues.append(clock())
+        print(f"\a  >>> FALL NOW ({len(cues)}) <<<", flush=True)
+    _wait_segment(duration_s - (clock() - start), "falling", clock)
+    return cues
+
+
 def run_scripted_session(
     ports: dict[str, str],
     out_dir: Path,
@@ -147,6 +183,7 @@ def run_scripted_session(
     clock: Callable[[], float] = time.time,
     traffic_ips: list[str] | None = None,
     lead_in_s: float = 0.0,
+    fall_interval_s: float = 15.0,
 ) -> Path:
     """Record continuously while stepping the operator through `script`.
 
@@ -161,6 +198,9 @@ def run_scripted_session(
     ``lead_in_s`` seconds elapse between the operator's Enter and the start of
     the labelled span, so the subject can get into position (or leave the room
     for a background segment) without contaminating the label.
+
+    During a ``falling`` segment the operator hears a cue every
+    ``fall_interval_s``; cue times go to labels.json ``events``.
     """
     session_name = f"{time.strftime('%Y%m%d_%H%M%S')}_{subject}_scripted"
     session_dir = out_dir / session_name
@@ -177,6 +217,7 @@ def run_scripted_session(
     ]
 
     timed_segments: list[TimedSegment] = []
+    fall_cues: list[float] = []
     with downlink_traffic(traffic_ips):
         for t in threads:
             t.start()
@@ -191,7 +232,12 @@ def run_scripted_session(
                         lead_in_s, f"get in position for {segment.label}", clock
                     )
                 start_ts = clock()
-                _wait_segment(segment.duration_s, segment.label, clock)
+                if segment.label == "falling":
+                    fall_cues += _cue_falls(
+                        segment.duration_s, fall_interval_s, clock
+                    )
+                else:
+                    _wait_segment(segment.duration_s, segment.label, clock)
                 end_ts = clock()
                 timed_segments.append(
                     TimedSegment(
@@ -213,7 +259,7 @@ def run_scripted_session(
         frames_to_dataframe(s.frames).to_parquet(path)
         print(f"{s.receiver_id}: {len(s.frames)} frames -> {path}")
 
-    write_labels_json(session_dir, tuple(timed_segments))
+    write_labels_json(session_dir, tuple(timed_segments), tuple(fall_cues))
     return session_dir
 
 
@@ -239,6 +285,10 @@ def main(argv: list[str] | None = None) -> int:
         help="delay between pressing Enter and the labelled span starting, so "
         "the subject can get into position or leave the room (use ~15 for "
         "background segments when recording alone)",
+    )
+    ap.add_argument(
+        "--fall-every", type=float, default=15.0, metavar="SECONDS",
+        help="seconds between fall cues inside a falling segment (default 15)",
     )
     add_traffic_argument(ap)
     args = ap.parse_args(argv)
@@ -267,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     session_dir = run_scripted_session(
         ports, args.out, script, args.subject, args.env, args.notes,
         traffic_ips=args.traffic, lead_in_s=args.lead_in,
+        fall_interval_s=args.fall_every,
     )
     print(f"\nsession saved: {session_dir}")
     return 0
