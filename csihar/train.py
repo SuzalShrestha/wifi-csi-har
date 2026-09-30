@@ -23,12 +23,13 @@ import os
 import random
 import warnings
 from dataclasses import asdict, dataclass, replace
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 
 from .dataset import (
     HarDataset,
@@ -95,19 +96,31 @@ class TrainConfig:
 # ------------------------------------------------------------ normalization
 
 
-def norm_fit(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def norm_fit(
+    X: np.ndarray, idx: np.ndarray | None = None, chunk: int = 128
+) -> tuple[np.ndarray, np.ndarray]:
     """Per-(receiver, subcarrier) mean/std over TRAIN windows only.
 
     X: (n, n_rx, T, S) -> mean, std each (n_rx, S) float32. Dead channels
-    (zero std) get std 1.0 so normalization never divides by zero.
+    (zero std) get std 1.0 so normalization never divides by zero. ``idx``
+    selects the train windows; they are read ``chunk`` at a time so a
+    multi-GB dataset is never copied just to take its statistics.
     """
     X = np.asarray(X)
     if X.ndim != 4:
         raise ValueError(f"expected (n, n_rx, T, S), got shape {X.shape}")
-    if X.shape[0] == 0:
+    idx = np.arange(X.shape[0]) if idx is None else np.asarray(idx)
+    if len(idx) == 0:
         raise ValueError("cannot fit normalization on zero windows")
-    mean = X.mean(axis=(0, 2), dtype=np.float64)
-    std = X.std(axis=(0, 2), dtype=np.float64)
+    total = np.zeros((X.shape[1], X.shape[3]))
+    total_sq = np.zeros_like(total)
+    for start in range(0, len(idx), chunk):
+        part = X[idx[start:start + chunk]].astype(np.float64)
+        total += part.sum(axis=(0, 2))
+        total_sq += np.square(part).sum(axis=(0, 2))
+    count = len(idx) * X.shape[2]
+    mean = total / count
+    std = np.sqrt(np.maximum(total_sq / count - mean**2, 0.0))
     std = np.where(std < 1e-8, 1.0, std)
     return mean.astype(np.float32), std.astype(np.float32)
 
@@ -235,24 +248,43 @@ def _seed_everything(seed: int) -> None:
 
 
 def _make_loader(
-    X: np.ndarray, y: np.ndarray, batch_size: int, *, shuffle: bool, seed: int
+    X: np.ndarray,
+    y: np.ndarray,
+    idx: np.ndarray,
+    mean: np.ndarray,
+    std: np.ndarray,
+    batch_size: int,
+    *,
+    shuffle: bool,
+    seed: int,
 ) -> DataLoader:
-    dataset = TensorDataset(
-        torch.from_numpy(np.ascontiguousarray(X, dtype=np.float32)),
-        torch.from_numpy(np.ascontiguousarray(y, dtype=np.int64)),
-    )
+    """Batches of X[idx], normalized per batch.
+
+    Normalizing up front held a float32 copy of every split next to X; at the
+    M3 target (25k windows, 4.7 GB) that is ~3x the dataset and OOMs Colab.
+    """
+    idx = np.asarray(idx)
+
+    def collate(positions: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+        rows = idx[positions]
+        return (
+            torch.from_numpy(norm_apply(X[rows], mean, std)),
+            torch.from_numpy(np.asarray(y[rows], dtype=np.int64)),
+        )
+
     generator = torch.Generator()
     generator.manual_seed(seed)
     # A stray size-1 last batch breaks BatchNorm in train mode; drop it only
     # when a full batch remains, so tiny smoke datasets still train.
-    drop_last = shuffle and len(dataset) > batch_size and len(dataset) % batch_size == 1
+    drop_last = shuffle and len(idx) > batch_size and len(idx) % batch_size == 1
     return DataLoader(
-        dataset,
+        range(len(idx)),
         batch_size=batch_size,
         shuffle=shuffle,
         generator=generator,
         drop_last=drop_last,
         num_workers=0,
+        collate_fn=collate,
     )
 
 
@@ -343,20 +375,12 @@ def train_model(ds: HarDataset, cfg: TrainConfig) -> tuple[MetricsReport, Path]:
         val_idx = fit_idx
 
     # Train-only normalization stats; val/test are transformed, never fitted.
-    mean, std = norm_fit(ds.X[fit_idx])
-    X_fit = norm_apply(ds.X[fit_idx], mean, std)
-    X_val = norm_apply(ds.X[val_idx], mean, std)
-    X_test = norm_apply(ds.X[test_idx], mean, std)
-
-    train_loader = _make_loader(
-        X_fit, ds.y[fit_idx], cfg.batch_size, shuffle=True, seed=cfg.seed
-    )
-    val_loader = _make_loader(
-        X_val, ds.y[val_idx], cfg.batch_size, shuffle=False, seed=cfg.seed
-    )
-    test_loader = _make_loader(
-        X_test, ds.y[test_idx], cfg.batch_size, shuffle=False, seed=cfg.seed
-    )
+    mean, std = norm_fit(ds.X, fit_idx)
+    loader = partial(_make_loader, ds.X, ds.y, mean=mean, std=std,
+                     batch_size=cfg.batch_size, seed=cfg.seed)
+    train_loader = loader(fit_idx, shuffle=True)
+    val_loader = loader(val_idx, shuffle=False)
+    test_loader = loader(test_idx, shuffle=False)
 
     n_classes = len(ds.label_names)
     model_config = _model_config(cfg, ds.X, n_classes)
